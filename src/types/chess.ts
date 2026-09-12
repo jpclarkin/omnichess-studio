@@ -95,6 +95,12 @@ export interface TacticalPuzzle {
   turn: "w" | "b";
   description: string;
   coachTip: string;
+  sourceUrl?: string;
+  gameDetails?: {
+    white: { name: string; rating: number };
+    black: { name: string; rating: number };
+    opening?: string;
+  };
 }
 
 export interface OpeningMoveStats {

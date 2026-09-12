@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef, useMemo } from "react";
 import { Chess } from "chess.js";
 import type { GameAnalysisReport, AnalyzedMove, MoveGrade, EngineCandidateLine } from "../types/chess";
 import { findTopMoves } from "../engine/chessEngine";
+import { queryTablebase, countPiecesOnBoard, type TablebaseEvaluation } from "../services/tablebaseService";
+import { queryLiveOpening, type CloudOpeningResponse } from "../services/cloudOpeningService";
 import {
   Copy,
   Check,
@@ -21,6 +23,9 @@ import {
   RotateCcw,
   ListTree,
   CheckCircle2,
+  ShieldCheck,
+  Globe,
+  Loader2,
 } from "lucide-react";
 
 interface AnalysisPanelProps {
@@ -55,8 +60,15 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
   const [isPlaying, setIsPlaying] = useState(false);
   const [isPreviewingEngine, setIsPreviewingEngine] = useState(false);
   const [previewingLineRank, setPreviewingLineRank] = useState<number | null>(null);
+  const [previewingMoveSan, setPreviewingMoveSan] = useState<string | null>(null);
   const [maxLines, setMaxLines] = useState<number>(3);
   const [activeTab, setActiveTab] = useState<"moves" | "overview">("moves");
+
+  // Tablebase & Opening Book state (Phase 2)
+  const [tablebaseData, setTablebaseData] = useState<TablebaseEvaluation | null>(null);
+  const [isLoadingTablebase, setIsLoadingTablebase] = useState(false);
+  const [cloudOpeningData, setCloudOpeningData] = useState<CloudOpeningResponse | null>(null);
+  const [isLoadingCloudOpening, setIsLoadingCloudOpening] = useState(false);
 
   const moveListRef = useRef<HTMLDivElement>(null);
 
@@ -68,7 +80,49 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
   useEffect(() => {
     setIsPreviewingEngine(false);
     setPreviewingLineRank(null);
+    setPreviewingMoveSan(null);
   }, [selectedPly]);
+
+  // Query Syzygy Tablebase or Cloud Opening Book for selected move
+  useEffect(() => {
+    let isCancelled = false;
+    if (!selectedMove) return;
+
+    const fen = selectedMove.fenBefore;
+    const pieces = countPiecesOnBoard(fen);
+
+    // 1. Tablebase query if <= 7 pieces
+    if (pieces <= 7) {
+      setIsLoadingTablebase(true);
+      queryTablebase(fen).then((tb) => {
+        if (!isCancelled) {
+          setTablebaseData(tb);
+          setIsLoadingTablebase(false);
+        }
+      });
+    } else {
+      setTablebaseData(null);
+      setIsLoadingTablebase(false);
+    }
+
+    // 2. Cloud opening query for early game (first 15 moves)
+    if (selectedMove.moveNumber <= 15) {
+      setIsLoadingCloudOpening(true);
+      queryLiveOpening(fen).then((co) => {
+        if (!isCancelled) {
+          setCloudOpeningData(co);
+          setIsLoadingCloudOpening(false);
+        }
+      });
+    } else {
+      setCloudOpeningData(null);
+      setIsLoadingCloudOpening(false);
+    }
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [selectedMove]);
 
   // Autoplay / Replay functionality
   useEffect(() => {
@@ -193,8 +247,23 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
   const handleResetToPlayed = () => {
     if (!selectedMove) return;
     setPreviewingLineRank(null);
+    setPreviewingMoveSan(null);
     setIsPreviewingEngine(false);
     onSelectPly(selectedMove.ply);
+  };
+
+  const handlePreviewCustomMove = (san: string) => {
+    if (!selectedMove) return;
+    if (previewingMoveSan === san && isPreviewingEngine) {
+      handleResetToPlayed();
+    } else {
+      setPreviewingMoveSan(san);
+      setPreviewingLineRank(null);
+      setIsPreviewingEngine(true);
+      if (onPreviewEngineMove) {
+        onPreviewEngineMove(san, selectedMove.fenBefore);
+      }
+    }
   };
 
   const handleToggleEnginePreview = () => {
@@ -560,7 +629,7 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
                   <span className="flex items-center gap-1.5">
                     <Eye className="w-3.5 h-3.5 text-emerald-400" />
                     <span>
-                      Previewing {previewingLineRank ? `Line #${previewingLineRank}` : "Engine Move"} on board
+                      Previewing {previewingLineRank ? `Line #${previewingLineRank}` : previewingMoveSan ? `Continuation ${previewingMoveSan}` : "Engine Move"} on board
                     </span>
                   </span>
                   <button
@@ -572,6 +641,168 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
                 </div>
               )}
             </div>
+
+            {/* Syzygy 7-Piece Endgame Tablebase (Phase 2) */}
+            {(tablebaseData || isLoadingTablebase) && (
+              <div className="bg-gradient-to-br from-[#121622] to-[#161c2b] p-3 rounded-lg border border-sky-500/40 flex flex-col gap-2 shadow-sm animate-in fade-in">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <ShieldCheck className="w-3.5 h-3.5 text-sky-400" />
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-sky-300">
+                      7-Piece Syzygy Tablebase
+                    </span>
+                    {tablebaseData && (
+                      <span className="text-[9px] font-mono text-slate-400">
+                        ({tablebaseData.pieceCount} pieces)
+                      </span>
+                    )}
+                  </div>
+
+                  {isLoadingTablebase ? (
+                    <span className="flex items-center gap-1 text-[10px] text-sky-400 font-mono">
+                      <Loader2 className="w-3 h-3 animate-spin" /> Resolving...
+                    </span>
+                  ) : tablebaseData ? (
+                    <span
+                      className={`text-[10px] px-2 py-0.5 rounded font-mono font-bold uppercase border ${
+                        tablebaseData.category === "win"
+                          ? "bg-emerald-950/80 text-emerald-300 border-emerald-500/60"
+                          : tablebaseData.category === "draw"
+                          ? "bg-sky-950/80 text-sky-300 border-sky-500/60"
+                          : "bg-rose-950/80 text-rose-300 border-rose-500/60"
+                      }`}
+                    >
+                      {tablebaseData.category === "win"
+                        ? "Theoretical Win"
+                        : tablebaseData.category === "draw"
+                        ? "Theoretical Draw"
+                        : "Theoretical Loss"}
+                    </span>
+                  ) : null}
+                </div>
+
+                {tablebaseData && (
+                  <>
+                    <p className="text-[11px] text-slate-300 bg-[#0d1017] p-2 rounded border border-[#202738]">
+                      {tablebaseData.summary}
+                    </p>
+
+                    {/* Tablebase Candidate Moves */}
+                    <div className="flex flex-col gap-1.5">
+                      <span className="text-[10px] text-slate-400 font-medium">
+                        Optimal Tablebase Continuations:
+                      </span>
+                      <div className="flex flex-wrap gap-1.5">
+                        {tablebaseData.moves.slice(0, 5).map((m) => {
+                          const isWin = m.category === "win";
+                          const isDraw = m.category === "draw";
+                          const isPreviewed = isPreviewingEngine && previewingMoveSan === m.san;
+                          return (
+                            <button
+                              key={m.uci}
+                              type="button"
+                              onClick={() => handlePreviewCustomMove(m.san)}
+                              className={`px-2 py-1 rounded text-xs font-mono font-semibold border transition flex items-center gap-1.5 cursor-pointer ${
+                                isPreviewed
+                                  ? "bg-emerald-600 text-white border-emerald-400 shadow ring-1 ring-emerald-400/50"
+                                  : isWin
+                                  ? "bg-emerald-950/60 hover:bg-emerald-900 text-emerald-200 border-emerald-500/40"
+                                  : isDraw
+                                  ? "bg-sky-950/50 hover:bg-sky-900 text-sky-200 border-sky-500/40"
+                                  : "bg-rose-950/50 hover:bg-rose-900 text-rose-200 border-rose-500/40"
+                              }`}
+                              title={`Preview ${m.san} (${m.category}${m.dtm !== null ? `, mate in ${Math.ceil(Math.abs(m.dtm) / 2)}` : ""})`}
+                            >
+                              <span>{m.san}</span>
+                              <span className="text-[9px] uppercase opacity-75 font-sans">
+                                {m.category}
+                                {m.dtm !== null && isWin ? ` (M${Math.ceil(Math.abs(m.dtm) / 2)})` : ""}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* Master Opening Theory (Phase 2) */}
+            {cloudOpeningData && cloudOpeningData.moves.length > 0 && (
+              <div className="bg-[#12141d] p-2.5 rounded-lg border border-[#222736] flex flex-col gap-2">
+                <div className="flex items-center justify-between border-b border-[#202533] pb-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <Globe className="w-3.5 h-3.5 text-sky-400" />
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-300">
+                      Master Opening Book
+                    </span>
+                    {isLoadingCloudOpening && <Loader2 className="w-3 h-3 animate-spin text-sky-400" />}
+                  </div>
+
+                  {cloudOpeningData.moves.some((m) => m.san === selectedMove.san) ? (
+                    <span className="text-[9px] bg-emerald-950/80 text-emerald-300 border border-emerald-500/40 px-1.5 py-0.2 rounded font-mono font-semibold flex items-center gap-1">
+                      <CheckCircle2 className="w-2.5 h-2.5" />
+                      Book Move
+                    </span>
+                  ) : (
+                    <span className="text-[9px] bg-amber-950/80 text-amber-300 border border-amber-500/40 px-1.5 py-0.2 rounded font-mono">
+                      Novelty / Off-Book
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex flex-col gap-1">
+                  {cloudOpeningData.moves.slice(0, 3).map((m, idx) => {
+                    const isPlayedInGame = m.san === selectedMove.san;
+                    const isPreviewed = isPreviewingEngine && previewingMoveSan === m.san;
+                    return (
+                      <div
+                        key={m.uci + idx}
+                        onClick={() => handlePreviewCustomMove(m.san)}
+                        className={`flex items-center justify-between p-1.5 rounded text-xs border transition cursor-pointer ${
+                          isPreviewed
+                            ? "bg-[#1c2333] border-sky-500 text-white"
+                            : "bg-[#151824] hover:bg-[#1a1f2e] border-[#222736] text-slate-300"
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-[10px] text-slate-500">#{idx + 1}</span>
+                          <strong className="font-mono text-white text-xs">{m.san}</strong>
+                          {isPlayedInGame && (
+                            <span className="text-[9px] text-emerald-400 font-mono">(Played)</span>
+                          )}
+                          {m.gamesCount && (
+                            <span className="text-[10px] text-slate-500 font-mono">
+                              ({m.gamesCount.toLocaleString()} games)
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-2 font-mono text-[11px]">
+                          <span className="text-slate-300">{m.evalDisplay}</span>
+                          {m.winrate !== undefined && (
+                            <span className="text-[10px] text-emerald-400 bg-emerald-950/60 px-1.5 py-0.2 rounded border border-emerald-500/30">
+                              {m.winrate}% W
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handlePreviewCustomMove(m.san);
+                            }}
+                            className="text-[10px] px-1.5 py-0.2 bg-[#202534] hover:bg-[#2c3346] text-slate-300 rounded cursor-pointer"
+                          >
+                            {isPreviewed ? "Viewing" : "Preview"}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* Action Bar for Selected Move */}
             <div className="flex items-center justify-between pt-1 gap-2 border-t border-[#232733]">
