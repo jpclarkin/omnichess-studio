@@ -181,6 +181,7 @@ export interface PerformancePlan {
   profileUsername?: string;
   profilePlatform?: "local" | "chess.com" | "lichess";
   evaluatedAt: string;
+  calibrationVersion?: number;
   totalGamesAnalyzed: number;
   overallRating: number;
   overallAccuracyAvg: number;

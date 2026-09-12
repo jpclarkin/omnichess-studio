@@ -76,6 +76,15 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
     setIsCalibratingRating(false);
   };
 
+  // Subscribe to live plan updates (calibrations, migrations, batch imports)
+  useEffect(() => {
+    const current = diagnosticService.getPerformancePlan();
+    setPlan(current);
+    return diagnosticService.subscribe((updated) => {
+      setPlan(updated);
+    });
+  }, []);
+
   // Sync plan updates
   const refreshPlan = () => {
     setPlan(diagnosticService.getPerformancePlan());

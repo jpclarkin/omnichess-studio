@@ -66,6 +66,15 @@ export function App() {
 
   const isBotThinkingRef = useRef(false);
 
+  // Keep player profile in sync with diagnosticService (auto-migrations and calibrations)
+  useEffect(() => {
+    const current = diagnosticService.getPerformancePlan();
+    setPlayerProfile(current);
+    return diagnosticService.subscribe((updated) => {
+      setPlayerProfile(updated);
+    });
+  }, []);
+
   // Timer Tick
   useEffect(() => {
     if (!isClockActive || gameOverReason || timeControl.category === "unlimited") return;

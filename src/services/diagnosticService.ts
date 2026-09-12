@@ -168,6 +168,7 @@ function createDefaultPlan(): PerformancePlan {
     playerId: "player-local",
     playerName: "Player",
     evaluatedAt: new Date().toISOString(),
+    calibrationVersion: 2,
     totalGamesAnalyzed: 0,
     overallRating: 1000,
     overallAccuracyAvg: 72,
@@ -255,9 +256,17 @@ export interface BatchProfileOptions {
 
 class DiagnosticService {
   private plan: PerformancePlan;
+  private listeners: Array<(plan: PerformancePlan) => void> = [];
 
   constructor() {
     this.plan = this.loadPlan();
+  }
+
+  public subscribe(fn: (plan: PerformancePlan) => void): () => void {
+    this.listeners.push(fn);
+    return () => {
+      this.listeners = this.listeners.filter((l) => l !== fn);
+    };
   }
 
   private loadPlan(): PerformancePlan {
@@ -267,15 +276,131 @@ class DiagnosticService {
       if (saved) {
         const parsed = JSON.parse(saved);
         // If profile has no analyzed games and has the legacy inflated rating, migrate to 1000 baseline
-        if (parsed && parsed.totalGamesAnalyzed === 0 && (parsed.overallRating === 1540 || parsed.overallRating >= 2000)) {
-          return createDefaultPlan();
+        if (
+          parsed &&
+          (!parsed.totalGamesAnalyzed || parsed.totalGamesAnalyzed === 0) &&
+          (parsed.overallRating === 1540 || parsed.overallRating >= 1800)
+        ) {
+          const fresh = createDefaultPlan();
+          this.savePlan(fresh);
+          return fresh;
         }
+
+        // Migrate any profile that has inflated rating (e.g. 2288 or >= 1800) or missing calibrationVersion 2
+        if (parsed && (parsed.calibrationVersion !== 2 || parsed.overallRating >= 1800)) {
+          return this.migrateLegacyProfile(parsed);
+        }
+
         return parsed;
       }
     } catch (e) {
       console.warn("Could not load performance plan from localStorage:", e);
     }
     return createDefaultPlan();
+  }
+
+  private migrateLegacyProfile(parsed: any): PerformancePlan {
+    // If no games analyzed, use default 1000 baseline
+    if (!parsed.gamesHistory || parsed.gamesHistory.length === 0 || !parsed.totalGamesAnalyzed) {
+      const def = createDefaultPlan();
+      this.savePlan(def);
+      return def;
+    }
+
+    // Attempt to extract known player rating from PGN headers or opponent ratings
+    let knownPlatformRatingSum = 0;
+    let knownPlatformRatingCount = 0;
+    let opponentRatingSum = 0;
+    let opponentRatingCount = 0;
+
+    let accSum = 0;
+    let blundersSum = 0;
+    let missedWinsSum = 0;
+    let mistakesSum = 0;
+
+    parsed.gamesHistory.forEach((g: DiagnosedGameSummary) => {
+      accSum += g.accuracy || 72;
+      blundersSum += g.blundersCount || 0;
+      missedWinsSum += g.missedWinsCount || 0;
+      if (g.opponentRating && g.opponentRating > 300) {
+        opponentRatingSum += g.opponentRating;
+        opponentRatingCount++;
+      }
+
+      if (g.pgn) {
+        const tag = g.playerColor === "w" ? /\[WhiteElo\s+"(\d+)"\]/i : /\[BlackElo\s+"(\d+)"\]/i;
+        const m = g.pgn.match(tag);
+        if (m && m[1]) {
+          const r = parseInt(m[1], 10);
+          if (!isNaN(r) && r >= 300 && r <= 3200) {
+            knownPlatformRatingSum += r;
+            knownPlatformRatingCount++;
+          }
+        }
+      }
+    });
+
+    const gamesCount = parsed.gamesHistory.length;
+    const avgAcc = gamesCount > 0 ? Math.round(accSum / gamesCount) : 72;
+    const blundersPerGame = gamesCount > 0 ? blundersSum / gamesCount : 0;
+    const missedWinsPerGame = gamesCount > 0 ? missedWinsSum / gamesCount : 0;
+    const mistakesPerGame = gamesCount > 0 ? mistakesSum / gamesCount : 0;
+
+    // Non-linear empirical Elo estimation based on CAPS-style move accuracy & tactical blunders
+    const accClamped = Math.max(30, Math.min(99, avgAcc));
+    const accuracyBase = Math.round(500 + Math.pow(Math.max(0, accClamped - 40) / 55, 1.85) * 1900);
+    const blunderPenalty = Math.round(
+      Math.min(550, blundersPerGame * 90 + missedWinsPerGame * 50 + mistakesPerGame * 25)
+    );
+    const estimatedElo = Math.max(450, Math.min(2800, accuracyBase - blunderPenalty));
+
+    let finalOverallRating: number;
+    if (knownPlatformRatingCount > 0) {
+      const knownPlatformAvg = Math.round(knownPlatformRatingSum / knownPlatformRatingCount);
+      finalOverallRating = Math.round(knownPlatformAvg * 0.85 + estimatedElo * 0.15);
+    } else if (opponentRatingCount > 0) {
+      const opponentAvg = Math.round(opponentRatingSum / opponentRatingCount);
+      finalOverallRating = Math.round(opponentAvg * 0.75 + estimatedElo * 0.25);
+    } else {
+      // Fallback: If still above 1800 from legacy bug, calibrate to realistic 1000 baseline
+      finalOverallRating = estimatedElo >= 1800 ? 1000 : estimatedElo;
+    }
+
+    // Ensure rating is never inflated to 2200+ for novice accounts
+    if (finalOverallRating >= 1800 && knownPlatformRatingCount === 0) {
+      finalOverallRating = 1000;
+    }
+
+    // Recalculate competencies based on the new finalOverallRating
+    const updatedCompetencies = { ...parsed.competencies };
+    for (const key of Object.keys(updatedCompetencies) as Array<keyof typeof updatedCompetencies>) {
+      const comp = updatedCompetencies[key];
+      if (comp) {
+        updatedCompetencies[key] = this.calculateCompetency(
+          comp.name,
+          comp.score,
+          comp.tendency || "",
+          finalOverallRating
+        );
+      }
+    }
+
+    const lowestCompetency = Object.values(updatedCompetencies).sort((a: any, b: any) => a.score - b.score)[0] as CompetencyScore;
+    const usernameDisplay = parsed.profileUsername || parsed.playerName || "Player";
+    const coachPrescription = `Stockfish 19 Diagnostic calibrated your profile to ${finalOverallRating} Elo for ${usernameDisplay} (${avgAcc}% avg accuracy). Your top priority for development is ${lowestCompetency.name} (${lowestCompetency.score}/100, Est. ${lowestCompetency.rating} Elo, ${lowestCompetency.level}).`;
+
+    const migrated: PerformancePlan = {
+      ...parsed,
+      overallRating: finalOverallRating,
+      overallAccuracyAvg: avgAcc,
+      competencies: updatedCompetencies,
+      coachPrescription,
+      calibrationVersion: 2,
+      evaluatedAt: new Date().toISOString(),
+    };
+
+    this.savePlan(migrated);
+    return migrated;
   }
 
   public savePlan(plan: PerformancePlan): void {
@@ -287,6 +412,13 @@ class DiagnosticService {
         console.warn("Could not save performance plan:", e);
       }
     }
+    this.listeners.forEach((fn) => {
+      try {
+        fn(plan);
+      } catch (e) {
+        console.error("Error in plan listener:", e);
+      }
+    });
   }
 
   public getPerformancePlan(): PerformancePlan {
@@ -751,6 +883,7 @@ class DiagnosticService {
       overallRating: clamped,
       competencies: updatedCompetencies,
       coachPrescription,
+      calibrationVersion: 2,
       evaluatedAt: new Date().toISOString(),
     };
     this.savePlan(updatedPlan);
