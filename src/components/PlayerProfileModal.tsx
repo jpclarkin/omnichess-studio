@@ -32,9 +32,16 @@ export const PlayerProfileModal: React.FC<PlayerProfileModalProps> = ({
   onOpenImportGames,
 }) => {
   const [isEditingName, setIsEditingName] = useState(false);
-  const [nameInput, setNameInput] = useState(plan.profileUsername || plan.playerName || "Candidate Master");
+  const [nameInput, setNameInput] = useState(plan.profileUsername || plan.playerName || "Player");
+  const [isEditingRating, setIsEditingRating] = useState(false);
+  const [ratingInput, setRatingInput] = useState(plan.overallRating.toString());
   const [copiedStatus, setCopiedStatus] = useState<string | null>(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+
+  React.useEffect(() => {
+    setNameInput(plan.profileUsername || plan.playerName || "Player");
+    setRatingInput(plan.overallRating.toString());
+  }, [plan.profileUsername, plan.playerName, plan.overallRating]);
 
   if (!isOpen) return null;
 
@@ -45,6 +52,20 @@ export const PlayerProfileModal: React.FC<PlayerProfileModalProps> = ({
     const updated = diagnosticService.setProfileName(clean, plan.profilePlatform || "local");
     onPlanUpdated(updated);
     setIsEditingName(false);
+  };
+
+  const handleSaveRating = (e: React.FormEvent) => {
+    e.preventDefault();
+    const val = parseInt(ratingInput, 10);
+    if (isNaN(val) || val < 400 || val > 3000) {
+      alert("Please enter a valid Elo rating between 400 and 3000.");
+      return;
+    }
+    const updated = diagnosticService.setPlayerRating(val);
+    onPlanUpdated(updated);
+    setIsEditingRating(false);
+    setCopiedStatus(`Rating calibrated to ${val} Elo!`);
+    setTimeout(() => setCopiedStatus(null), 3000);
   };
 
   const handleExportBackup = () => {
@@ -201,19 +222,61 @@ export const PlayerProfileModal: React.FC<PlayerProfileModalProps> = ({
               </div>
             </div>
 
-            {/* Rating pill */}
+            {/* Rating pill & Calibration */}
             <div className="bg-[#12141d] px-3.5 py-2 rounded-xl border border-[#272e40] text-right">
               <span className="text-[10px] text-slate-400 uppercase tracking-wider block font-mono">
-                Estimated FIDE Rating
+                Estimated FIDE / Online Rating
               </span>
-              <div className="flex items-baseline gap-1.5 justify-end">
-                <span className="text-lg font-bold text-emerald-400 font-mono">
-                  {plan.overallRating}
-                </span>
-                <span className="text-xs text-slate-400 font-semibold">
-                  Elo
-                </span>
-              </div>
+              {isEditingRating ? (
+                <form onSubmit={handleSaveRating} className="flex items-center justify-end gap-1.5 mt-1">
+                  <input
+                    type="number"
+                    min="400"
+                    max="3000"
+                    value={ratingInput}
+                    onChange={(e) => setRatingInput(e.target.value)}
+                    className="w-20 bg-[#10121a] border border-emerald-500 px-2 py-0.5 rounded text-white text-xs focus:outline-none font-mono font-bold text-right"
+                    autoFocus
+                  />
+                  <button
+                    type="submit"
+                    className="p-1 bg-emerald-700 hover:bg-emerald-600 text-white rounded cursor-pointer"
+                    title="Save calibrated rating"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsEditingRating(false);
+                      setRatingInput(plan.overallRating.toString());
+                    }}
+                    className="p-1 bg-[#232838] hover:bg-[#2d3448] text-slate-300 rounded cursor-pointer"
+                    title="Cancel"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </form>
+              ) : (
+                <div className="flex items-baseline gap-1.5 justify-end mt-0.5">
+                  <span className="text-lg font-bold text-emerald-400 font-mono">
+                    {plan.overallRating}
+                  </span>
+                  <span className="text-xs text-slate-400 font-semibold">
+                    Elo
+                  </span>
+                  <button
+                    onClick={() => {
+                      setRatingInput(plan.overallRating.toString());
+                      setIsEditingRating(true);
+                    }}
+                    className="text-slate-400 hover:text-emerald-400 transition cursor-pointer p-0.5 ml-1"
+                    title="Calibrate rating manually"
+                  >
+                    <Edit2 className="w-3 h-3" />
+                  </button>
+                </div>
+              )}
             </div>
           </div>
 

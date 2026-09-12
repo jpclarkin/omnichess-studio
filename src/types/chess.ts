@@ -123,7 +123,7 @@ export interface CompetencyScore {
   name: string;
   score: number; // 0 to 100
   rating: number; // Estimated Elo for this competency
-  level: "Grandmaster" | "Master" | "Expert" | "Class A" | "Class B" | "Class C" | "Novice";
+  level: "Grandmaster" | "Master" | "Expert" | "Class A" | "Class B" | "Class C" | "Intermediate" | "Novice" | "Beginner";
   summary: string;
   tendency: string; // Specific identified tendency
 }

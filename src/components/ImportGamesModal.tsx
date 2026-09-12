@@ -129,6 +129,7 @@ export const ImportGamesModal: React.FC<ImportGamesModalProps> = ({
         const playerColor: "w" | "b" = isWhite ? "w" : isBlack ? "b" : "w";
         const opponentName = playerColor === "w" ? game.black.username : game.white.username;
         const opponentRating = playerColor === "w" ? game.black.rating : game.white.rating;
+        const playerRating = playerColor === "w" ? game.white.rating : game.black.rating;
 
         // Determine user outcome
         let userResultOutcome: "win" | "loss" | "draw" = "draw";
@@ -153,6 +154,7 @@ export const ImportGamesModal: React.FC<ImportGamesModalProps> = ({
           title: `${playerColor === "w" ? "White" : "Black"} vs ${opponentName}`,
           opponent: opponentName,
           opponentRating,
+          playerRating,
           date: game.date,
           result: game.result,
           userResultOutcome,

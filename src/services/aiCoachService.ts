@@ -101,6 +101,19 @@ class AiCoachService {
 
     if (context.playerRating) {
       parts.push(`Student's Estimated Rating: ~${context.playerRating} Elo.`);
+      if (context.playerRating < 1200) {
+        parts.push(
+          "Pedagogical Instruction for Novice/Intermediate (~1000 Elo): Keep tactical advice concrete, accessible, and intuitive. Prioritize piece safety (not leaving pieces undefended), basic checks/captures/threats, king safety, and simple 1-2 move combinations rather than overly obscure positional theories."
+        );
+      } else if (context.playerRating < 1600) {
+        parts.push(
+          "Pedagogical Instruction for Club/Intermediate (~1200-1600 Elo): Emphasize active piece development, pawn structure integrity, coordination, and recognizing 2-3 move tactical motifs (forks, pins, skewers, deflection)."
+        );
+      } else {
+        parts.push(
+          "Pedagogical Instruction for Advanced/Master (1600+ Elo): Delve deeply into positional nuances, dynamic compensation, piece outposts, prophylaxis, and precise endgame conversion."
+        );
+      }
     }
 
     if (context.competenciesSummary) {

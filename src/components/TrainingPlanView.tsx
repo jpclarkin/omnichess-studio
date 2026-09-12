@@ -23,6 +23,9 @@ import {
   ChevronRight,
   User,
   Trash2,
+  Edit2,
+  Check,
+  X,
 } from "lucide-react";
 
 interface TrainingPlanViewProps {
@@ -54,6 +57,24 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   const [drillMessage, setDrillMessage] = useState<string | null>(null);
   const [showHint, setShowHint] = useState<boolean>(false);
   const [showSolution, setShowSolution] = useState<boolean>(false);
+  const [isCalibratingRating, setIsCalibratingRating] = useState(false);
+  const [ratingInput, setRatingInput] = useState(plan.overallRating.toString());
+
+  useEffect(() => {
+    setRatingInput(plan.overallRating.toString());
+  }, [plan.overallRating]);
+
+  const handleSaveCalibratedRating = (e: React.FormEvent) => {
+    e.preventDefault();
+    const val = parseInt(ratingInput, 10);
+    if (isNaN(val) || val < 400 || val > 3000) {
+      alert("Please enter a valid Elo rating between 400 and 3000.");
+      return;
+    }
+    const updated = diagnosticService.setPlayerRating(val);
+    setPlan(updated);
+    setIsCalibratingRating(false);
+  };
 
   // Sync plan updates
   const refreshPlan = () => {
@@ -200,12 +221,60 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2">
             <User className="w-4 h-4 text-emerald-400" />
-            <span className="text-slate-400">Player Profile:</span>
+            <span className="text-slate-400">Player:</span>
             <span className="font-bold text-white font-mono">{plan.playerName}</span>
             {plan.profilePlatform && (
               <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-[#1e2332] text-emerald-300 border border-[#30384c] font-semibold">
                 {plan.profilePlatform}
               </span>
+            )}
+          </div>
+          <span className="text-slate-600 hidden sm:inline">•</span>
+          <div className="flex items-center gap-1.5">
+            <span className="text-slate-400">Rating:</span>
+            {isCalibratingRating ? (
+              <form onSubmit={handleSaveCalibratedRating} className="flex items-center gap-1">
+                <input
+                  type="number"
+                  min="400"
+                  max="3000"
+                  value={ratingInput}
+                  onChange={(e) => setRatingInput(e.target.value)}
+                  className="w-16 bg-[#10121a] border border-emerald-500 px-1.5 py-0.5 rounded text-white text-xs font-mono font-bold"
+                  autoFocus
+                />
+                <button
+                  type="submit"
+                  className="p-1 bg-emerald-700 hover:bg-emerald-600 text-white rounded cursor-pointer"
+                  title="Save calibrated rating"
+                >
+                  <Check className="w-3 h-3" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsCalibratingRating(false)}
+                  className="p-1 bg-[#232838] hover:bg-[#2d3448] text-slate-300 rounded cursor-pointer"
+                  title="Cancel"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </form>
+            ) : (
+              <div className="flex items-center gap-1">
+                <span className="font-mono font-bold text-emerald-400">
+                  {plan.overallRating} Elo
+                </span>
+                <button
+                  onClick={() => {
+                    setRatingInput(plan.overallRating.toString());
+                    setIsCalibratingRating(true);
+                  }}
+                  className="text-slate-500 hover:text-emerald-400 transition cursor-pointer p-0.5"
+                  title="Calibrate your rating manually (e.g. 1000 Elo)"
+                >
+                  <Edit2 className="w-3 h-3" />
+                </button>
+              </div>
             )}
           </div>
           <span className="text-slate-600 hidden sm:inline">•</span>
@@ -231,7 +300,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
           </div>
           <span className="text-slate-600 hidden sm:inline">•</span>
           <span className="text-slate-400">
-            <span className="text-slate-200 font-bold font-mono">{plan.totalGamesAnalyzed}</span> games contributing to curriculum
+            <span className="text-slate-200 font-bold font-mono">{plan.totalGamesAnalyzed}</span> games contributing
           </span>
         </div>
 
@@ -312,11 +381,17 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
         <div className="flex flex-col gap-6 animate-in fade-in duration-150">
           {/* Coach Assessment & Summary */}
           <div className="bg-[#151822] border border-[#2d3342] p-5 rounded-xl shadow-lg">
-            <div className="flex items-center gap-2 mb-2">
-              <Award className="w-4 h-4 text-emerald-400" />
-              <h3 className="text-sm font-bold text-white uppercase tracking-wider">
-                Personalized Assessment by Stockfish 19
-              </h3>
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <Award className="w-4 h-4 text-emerald-400" />
+                <h3 className="text-sm font-bold text-white uppercase tracking-wider">
+                  Personalized Assessment by Stockfish 19
+                </h3>
+              </div>
+              <div className="flex items-center gap-1.5 text-xs font-mono bg-[#1b1e2a] px-2.5 py-1 rounded-lg border border-[#2e3547]">
+                <span className="text-slate-400">Estimated Rating:</span>
+                <span className="font-bold text-emerald-400">{plan.overallRating} Elo</span>
+              </div>
             </div>
             <p className="text-xs text-slate-300 leading-relaxed bg-[#1b1e2a] p-3.5 rounded-lg border border-[#2b3040]">
               {plan.coachPrescription}
