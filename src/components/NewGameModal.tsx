@@ -22,7 +22,7 @@ export const NewGameModal: React.FC<NewGameModalProps> = ({
   initialMode = "vs-computer",
 }) => {
   const [mode, setMode] = useState<GameMode>(initialMode);
-  const [selectedBot, setSelectedBot] = useState<BotProfile>(BOT_PROFILES[1]); // Intermediate
+  const [selectedBot, setSelectedBot] = useState<BotProfile>(BOT_PROFILES[2]); // Club
   const [selectedColor, setSelectedColor] = useState<"w" | "b" | "random">("w");
   const [selectedTimeControl, setSelectedTimeControl] = useState<TimeControl>(TIME_CONTROLS[3]); // 10 min Rapid
 
@@ -94,6 +94,9 @@ export const NewGameModal: React.FC<NewGameModalProps> = ({
             <label className="text-xs font-semibold text-slate-300 block mb-1.5 uppercase tracking-wider">
               Engine Difficulty
             </label>
+            <p className="text-[10px] text-slate-500 mb-2">
+              All levels are Stockfish with its strength limiter. "Engine Elo" is Stockfish's own scale, not a Chess.com or Lichess rating.
+            </p>
             <div className="grid grid-cols-2 gap-2">
               {BOT_PROFILES.map((bot) => (
                 <div
@@ -107,7 +110,7 @@ export const NewGameModal: React.FC<NewGameModalProps> = ({
                 >
                   <div className="w-8 h-8 rounded-lg bg-[#181a24] border border-[#2e3444] flex items-center justify-center shrink-0 mt-0.5">
                     <span className="text-xs font-mono font-bold text-sky-400">
-                      {bot.depth}p
+                      {bot.level.replace("Level ", "L")}
                     </span>
                   </div>
                   <div className="truncate">
@@ -115,7 +118,7 @@ export const NewGameModal: React.FC<NewGameModalProps> = ({
                       <span className="text-xs font-semibold text-white truncate">{bot.name}</span>
                     </div>
                     <span className="text-[11px] font-mono text-emerald-400 block">
-                      {bot.rating} Elo
+                      {bot.strengthLabel}
                     </span>
                     <span className="text-[10px] text-slate-400 block truncate mt-0.5">
                       {bot.description}

@@ -47,7 +47,7 @@ export const MoveHistory: React.FC<MoveHistoryProps> = ({
       inaccuracy: { glyph: "?!", bg: "bg-amber-950/80 text-amber-300 border-amber-500/60", title: "Inaccuracy (?!)" },
       mistake: { glyph: "?", bg: "bg-orange-950/80 text-orange-300 border-orange-500/60", title: "Mistake (?)" },
       blunder: { glyph: "??", bg: "bg-red-950/80 text-red-300 border-red-500/60", title: "Blunder (??)" },
-      missed_win: { glyph: "+-", bg: "bg-rose-950/80 text-rose-300 border-rose-500/60", title: "Missed Win (+-)" },
+      missed_win: { glyph: "✗", bg: "bg-rose-950/80 text-rose-300 border-rose-500/60", title: "Missed win" },
     };
 
     const b = badgeMap[grade];

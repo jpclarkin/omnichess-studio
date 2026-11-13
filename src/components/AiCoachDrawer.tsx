@@ -4,6 +4,7 @@ import {
   type CoachContext,
   type CoachMessage,
   type OpenSourceModelId,
+  DEFAULT_GROQ_MODEL,
 } from "../services/aiCoachService";
 import {
   Bot,
@@ -28,7 +29,7 @@ export const AiCoachDrawer: React.FC<AiCoachDrawerProps> = ({
     {
       id: "welcome-1",
       sender: "coach",
-      text: "Greetings. I am your Grandmaster AI Coach within OmniChess Studio. I am evaluating your position and performance profile in real time. Ask me about tactical oversights, strategic planning, opening ideas, or how to resolve your diagnosed deficits.",
+      text: "Hi! Ask me about the current position, a move from your game review, or your improvement plan. By default I answer with built-in templates; connect Groq or Ollama in settings for a real language model.",
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     },
   ]);
@@ -41,6 +42,20 @@ export const AiCoachDrawer: React.FC<AiCoachDrawerProps> = ({
   const [apiKeyInput, setApiKeyInput] = useState(settings.apiKey || "");
   const [ollamaEndpoint, setOllamaEndpoint] = useState(settings.ollamaEndpoint || "http://localhost:11434");
   const [ollamaModel, setOllamaModel] = useState(settings.ollamaModel || "llama3.3");
+  const [groqModel, setGroqModel] = useState(settings.groqModel || DEFAULT_GROQ_MODEL);
+  const [groqModels, setGroqModels] = useState<string[]>([]);
+  const [groqModelsError, setGroqModelsError] = useState<string | null>(null);
+
+  const loadGroqModels = async () => {
+    setGroqModelsError(null);
+    try {
+      const list = await aiCoachService.listGroqModels(apiKeyInput.trim());
+      setGroqModels(list);
+      if (list.length && !list.includes(groqModel)) setGroqModel(list[0]);
+    } catch (e) {
+      setGroqModelsError((e as Error).message);
+    }
+  };
 
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -76,11 +91,11 @@ export const AiCoachDrawer: React.FC<AiCoachDrawerProps> = ({
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       };
       setMessages((prev) => [...prev, coachMsg]);
-    } catch (e: any) {
+    } catch {
       const errorMsg: CoachMessage = {
         id: `error-${Date.now()}`,
         sender: "coach",
-        text: "I encountered an issue connecting to the inference engine. Please verify your settings or switch to the Built-in Grandmaster Engine.",
+        text: "I encountered an issue connecting to the inference engine. Please check your settings or switch to the built-in coach.",
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       };
       setMessages((prev) => [...prev, errorMsg]);
@@ -92,6 +107,7 @@ export const AiCoachDrawer: React.FC<AiCoachDrawerProps> = ({
   const handleSaveSettings = () => {
     aiCoachService.saveSettings({
       apiKey: apiKeyInput.trim(),
+      groqModel: groqModel.trim() || DEFAULT_GROQ_MODEL,
       ollamaEndpoint: ollamaEndpoint.trim(),
       ollamaModel: ollamaModel.trim(),
       selectedModel: settings.selectedModel,
@@ -108,11 +124,9 @@ export const AiCoachDrawer: React.FC<AiCoachDrawerProps> = ({
   const suggestedPrompts = aiCoachService.getSuggestedPrompts(context);
 
   const modelLabels: Record<OpenSourceModelId, string> = {
-    "builtin-gm": "OmniChess GM Engine (Offline)",
-    "llama-3.3-70b": "Llama 3.3 70B (Meta • Open)",
-    "deepseek-r1-70b": "DeepSeek-R1 (Reasoning • Open)",
-    "qwen-2.5-72b": "Qwen 2.5 72B (Alibaba • Open)",
-    "ollama-local": "Local Ollama (Private)",
+    "builtin-gm": "Built-in coach (offline, rule-based)",
+    groq: `Groq • ${settings.groqModel || DEFAULT_GROQ_MODEL}`,
+    "ollama-local": `Ollama • ${settings.ollamaModel || "llama3.3"}`,
   };
 
   return (
@@ -127,7 +141,7 @@ export const AiCoachDrawer: React.FC<AiCoachDrawerProps> = ({
             <div>
               <div className="flex items-center gap-2">
                 <h3 className="text-sm font-bold text-white tracking-wide">
-                  Grandmaster AI Coach
+                  AI Coach
                 </h3>
                 <span className="text-[10px] font-mono text-emerald-300 border border-emerald-500/50 px-1.5 py-0.2 rounded bg-emerald-950/60 font-semibold">
                   FIDE Senior Trainer
@@ -179,11 +193,9 @@ export const AiCoachDrawer: React.FC<AiCoachDrawerProps> = ({
                 onChange={(e) => handleModelChange(e.target.value as OpenSourceModelId)}
                 className="w-full bg-[#10121a] text-slate-200 border border-[#2d3446] rounded-lg p-2 font-mono text-xs focus:outline-none focus:border-emerald-500 cursor-pointer"
               >
-                <option value="builtin-gm">OmniChess GM Engine (Zero setup, offline, fast)</option>
-                <option value="llama-3.3-70b">Meta Llama 3.3 70B (State-of-the-Art Open LLM)</option>
-                <option value="deepseek-r1-70b">DeepSeek-R1 Distill (Deep Tactical Reasoning)</option>
-                <option value="qwen-2.5-72b">Alibaba Qwen 2.5 72B (High Precision)</option>
-                <option value="ollama-local">Local Ollama (100% Private on localhost)</option>
+                <option value="builtin-gm">Built-in coach (offline, rule-based templates)</option>
+                <option value="groq">Groq-hosted open model (needs a free API key)</option>
+                <option value="ollama-local">Local Ollama (runs on your computer)</option>
               </select>
             </div>
 
@@ -210,22 +222,45 @@ export const AiCoachDrawer: React.FC<AiCoachDrawerProps> = ({
                   />
                 </div>
               </div>
-            ) : settings.selectedModel !== "builtin-gm" ? (
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="text-slate-300">API Key (Groq / OpenRouter)</label>
-                  <span className="text-[10px] text-slate-400">Optional for Built-in</span>
+            ) : settings.selectedModel === "groq" ? (
+              <div className="flex flex-col gap-2">
+                <div>
+                  <label className="text-slate-300 block mb-0.5">Groq API key</label>
+                  <input
+                    type="password"
+                    value={apiKeyInput}
+                    onChange={(e) => setApiKeyInput(e.target.value)}
+                    placeholder="gsk_..."
+                    className="w-full bg-[#10121a] text-slate-200 border border-[#2d3446] rounded-lg p-1.5 font-mono text-xs"
+                  />
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    Get one at console.groq.com. It's saved unencrypted in this browser only. If a request fails, the
+                    reply says so and the built-in coach answers instead.
+                  </p>
                 </div>
-                <input
-                  type="password"
-                  value={apiKeyInput}
-                  onChange={(e) => setApiKeyInput(e.target.value)}
-                  placeholder="gsk_... or sk-or-..."
-                  className="w-full bg-[#10121a] text-slate-200 border border-[#2d3446] rounded-lg p-1.5 font-mono text-xs"
-                />
-                <p className="text-[10px] text-slate-400 mt-1">
-                  Provides access to Llama 3.3 70B & DeepSeek-R1. If omitted, seamlessly falls back to the built-in Grandmaster engine.
-                </p>
+                <div>
+                  <div className="flex items-center justify-between mb-0.5">
+                    <label className="text-slate-300">Model</label>
+                    <button type="button" onClick={() => void loadGroqModels()} className="text-[10px] text-sky-300 cursor-pointer">
+                      Load available models
+                    </button>
+                  </div>
+                  {groqModels.length ? (
+                    <select value={groqModel} onChange={(e) => setGroqModel(e.target.value)} className="w-full bg-[#10121a] text-slate-200 border border-[#2d3446] rounded-lg p-1.5 font-mono text-xs">
+                      {groqModels.map((m) => (
+                        <option key={m} value={m}>{m}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      value={groqModel}
+                      onChange={(e) => setGroqModel(e.target.value)}
+                      className="w-full bg-[#10121a] text-slate-200 border border-[#2d3446] rounded-lg p-1.5 font-mono text-xs"
+                    />
+                  )}
+                  {groqModelsError && <p className="text-[10px] text-amber-300 mt-1">Couldn't load models: {groqModelsError}</p>}
+                </div>
               </div>
             ) : null}
 
@@ -295,7 +330,7 @@ export const AiCoachDrawer: React.FC<AiCoachDrawerProps> = ({
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-bounce [animation-delay:0.2s]" />
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-bounce [animation-delay:0.4s]" />
                 </div>
-                <span>Grandmaster AI is calculating tactical lines...</span>
+                <span>Thinking…</span>
               </div>
             </div>
           )}

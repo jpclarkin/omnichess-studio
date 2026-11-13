@@ -1,412 +1,346 @@
-import { Chess, type Move } from "chess.js";
-import type { AnalyzedMove, GameAnalysisReport, MoveGrade } from "../types/chess";
-import { evaluateBoard, findBestMove, findTopMoves } from "./chessEngine";
-import { generateCoachExplanation } from "./commentaryEngine";
+/**
+ * Stockfish (WASM, Web Worker) wrapper.
+ *
+ * - One worker, one search at a time, driven by a priority queue.
+ * - Searches that time out are stopped with `stop`, so a late `bestmove`
+ *   can never be mistaken for the answer to a later request.
+ * - Results always say where they came from (`source`), so the UI can tell
+ *   the user when the engine was not available.
+ */
+import { Chess } from "chess.js";
+import type { Score } from "./grading";
 
-export interface StockfishEvaluation {
-  score: number; // Centipawns (+ for White, - for Black)
-  bestMoveSan: string;
-  bestMoveUci: string;
-  depth: number;
-  isMate: boolean;
-  mateIn?: number;
+export interface SearchOptions {
+  depth?: number;
+  movetime?: number;
+  multipv?: number;
+  /** Limit strength to this Elo (UCI_Elo, engine-rating scale). */
+  elo?: number | null;
+  /** Skill Level 0–20 (used for levels below UCI_Elo's minimum). */
+  skill?: number | null;
 }
 
-class StockfishEngineService {
-  private worker: Worker | null = null;
-  private isInitialized: boolean = false;
-  private isBusy: boolean = false;
-  private engineName: string = "Stockfish 19 (WASM NNUE)";
-  private pendingResolve: ((evalResult: StockfishEvaluation) => void) | null = null;
-  private currentEval: Partial<StockfishEvaluation> = {};
-  private currentFen: string = "";
-  private currentTimer: ReturnType<typeof setTimeout> | null = null;
+export interface EngineLine {
+  rank: number;
+  score: Score; // White POV
+  pvUci: string[];
+  pvSan: string[];
+  depth: number;
+}
 
-  public async init(): Promise<boolean> {
-    if (this.isInitialized && this.worker) return true;
-    if (typeof window === "undefined" || typeof Worker === "undefined") {
-      return false;
-    }
+export interface SearchResult {
+  fen: string;
+  bestMoveUci: string;
+  bestMoveSan: string;
+  lines: EngineLine[];
+  depth: number;
+  source: "stockfish" | "unavailable";
+}
 
-    try {
-      // Initialize Web Worker using the Stockfish 18/19 build
-      this.worker = new Worker("/stockfish/stockfish.js");
+type Priority = "high" | "low";
 
-      return new Promise<boolean>((resolve) => {
-        const timeout = setTimeout(() => {
-          // If worker takes too long to respond, mark initialized but allow fallback
-          this.isInitialized = true;
-          resolve(true);
-        }, 3000);
+interface Job {
+  fen: string;
+  opts: SearchOptions;
+  priority: Priority;
+  key?: string;
+  resolve: (r: SearchResult) => void;
+  reject: (e: unknown) => void;
+}
 
-        if (!this.worker) {
-          clearTimeout(timeout);
-          resolve(false);
-          return;
-        }
-
-        this.worker.onmessage = (e: MessageEvent) => {
-          const line: string = typeof e.data === "string" ? e.data : "";
-          if (line.includes("Stockfish")) {
-            this.engineName = line.trim();
-          }
-
-          if (line === "uciok" || line === "readyok") {
-            this.isInitialized = true;
-            clearTimeout(timeout);
-            resolve(true);
-          }
-
-          this.handleEngineOutput(line);
-        };
-
-        this.worker.onerror = (err) => {
-          console.warn("Stockfish worker error, falling back to local engine:", err);
-          clearTimeout(timeout);
-          resolve(false);
-        };
-
-        this.worker.postMessage("uci");
-        this.worker.postMessage("isready");
-      });
-    } catch (e) {
-      console.warn("Could not instantiate Stockfish Web Worker:", e);
-      return false;
-    }
+export class EngineCancelled extends Error {
+  constructor() {
+    super("Engine search cancelled");
+    this.name = "EngineCancelled";
   }
+}
 
-  public getEngineName(): string {
+const WORKER_URL = "/stockfish/stockfish.js";
+const INIT_TIMEOUT_MS = 15000;
+
+class StockfishService {
+  private worker: Worker | null = null;
+  private initPromise: Promise<boolean> | null = null;
+  private ready = false;
+  private engineName = "Stockfish";
+  private queue: Job[] = [];
+  private running: Job | null = null;
+  private runningLines = new Map<number, EngineLine>();
+  private runningTimer: ReturnType<typeof setTimeout> | null = null;
+  private hardTimer: ReturnType<typeof setTimeout> | null = null;
+  private stopRequested = false;
+  private currentOptions = new Map<string, string>();
+  private lineHandler: ((line: string) => void) | null = null;
+  private statusListeners = new Set<() => void>();
+
+  /** Human-readable engine id reported by the worker, e.g. "Stockfish 18 Lite WASM". */
+  getEngineName(): string {
     return this.engineName;
   }
 
-  public isAvailable(): boolean {
-    return !!this.worker && this.isInitialized;
+  isReady(): boolean {
+    return this.ready;
   }
 
-  private handleEngineOutput(line: string) {
-    if (line.startsWith("info ")) {
-      // Parse score: "score cp 45" or "score mate -2"
-      const cpMatch = line.match(/score cp (-?\d+)/);
-      const mateMatch = line.match(/score mate (-?\d+)/);
-      const depthMatch = line.match(/depth (\d+)/);
+  onStatusChange(fn: () => void): () => void {
+    this.statusListeners.add(fn);
+    return () => this.statusListeners.delete(fn);
+  }
 
-      if (cpMatch) {
-        let cp = parseInt(cpMatch[1], 10);
-        // Stockfish score is relative to player whose turn it is in FEN
-        // Convert to absolute score (positive = White, negative = Black)
-        if (this.currentFen.includes(" b ")) {
-          cp = -cp;
-        }
-        this.currentEval.score = cp;
-        this.currentEval.isMate = false;
-      } else if (mateMatch) {
-        const mateIn = parseInt(mateMatch[1], 10);
-        this.currentEval.isMate = true;
-        this.currentEval.mateIn = mateIn;
-        this.currentEval.score = mateIn > 0 ? 30000 - mateIn * 100 : -30000 - mateIn * 100;
-        if (this.currentFen.includes(" b ")) {
-          this.currentEval.score = -this.currentEval.score;
-        }
+  private emitStatus() {
+    this.statusListeners.forEach((fn) => fn());
+  }
+
+  init(): Promise<boolean> {
+    if (this.initPromise) return this.initPromise;
+    this.initPromise = new Promise<boolean>((resolve) => {
+      if (typeof Worker === "undefined") {
+        resolve(false);
+        return;
       }
-
-      if (depthMatch) {
-        this.currentEval.depth = parseInt(depthMatch[1], 10);
-      }
-    } else if (line.startsWith("bestmove ")) {
-      const parts = line.split(" ");
-      const bestMoveUci = parts[1] || "";
-      this.currentEval.bestMoveUci = bestMoveUci;
-
-      // Convert UCI to SAN using chess.js
-      let bestMoveSan = bestMoveUci;
+      let worker: Worker;
       try {
-        const g = new Chess(this.currentFen);
-        const from = bestMoveUci.substring(0, 2);
-        const to = bestMoveUci.substring(2, 4);
-        const promo = bestMoveUci.length > 4 ? bestMoveUci[4] : undefined;
-        const m = g.move({ from: from as any, to: to as any, promotion: promo as any });
-        if (m) bestMoveSan = m.san;
-      } catch {}
-
-      this.currentEval.bestMoveSan = bestMoveSan;
-
-      if (this.pendingResolve) {
-        if (this.currentTimer) {
-          clearTimeout(this.currentTimer);
-          this.currentTimer = null;
-        }
-        const result: StockfishEvaluation = {
-          score: this.currentEval.score ?? 0,
-          bestMoveSan: this.currentEval.bestMoveSan || "",
-          bestMoveUci: this.currentEval.bestMoveUci || "",
-          depth: this.currentEval.depth ?? 10,
-          isMate: !!this.currentEval.isMate,
-          mateIn: this.currentEval.mateIn,
-        };
-        this.isBusy = false;
-        this.pendingResolve(result);
-        this.pendingResolve = null;
+        worker = new Worker(WORKER_URL);
+      } catch (e) {
+        console.warn("Could not start Stockfish worker:", e);
+        resolve(false);
+        return;
       }
-    }
-  }
+      this.worker = worker;
 
-  public async evaluatePosition(fen: string, depth: number = 12): Promise<StockfishEvaluation> {
-    await this.init();
-
-    // If Worker is ready and not stuck, evaluate with Stockfish
-    if (this.worker && this.isInitialized && !this.isBusy) {
-      this.isBusy = true;
-      this.currentFen = fen;
-      this.currentEval = { score: 0, depth };
-
-      return new Promise<StockfishEvaluation>((resolve) => {
-        this.pendingResolve = resolve;
-
-        // Failsafe timeout in case engine hangs
-        this.currentTimer = setTimeout(() => {
-          if (this.pendingResolve) {
-            this.isBusy = false;
-            // Fallback to local minimax
-            const g = new Chess(fen);
-            const fallbackMove = findBestMove(g, 2);
-            resolve({
-              score: evaluateBoard(g),
-              bestMoveSan: fallbackMove.san,
-              bestMoveUci: fallbackMove.move ? `${fallbackMove.move.from}${fallbackMove.move.to}` : "",
-              depth: 2,
-              isMate: false,
-            });
-            this.pendingResolve = null;
-            this.currentTimer = null;
-          }
-        }, 1800);
-
-        this.worker!.postMessage(`position fen ${fen}`);
-        this.worker!.postMessage(`go depth ${depth}`);
-      });
-    }
-
-    // Fallback: Synchronous engine calculation
-    const fallbackGame = new Chess(fen);
-    const best = findBestMove(fallbackGame, 2);
-    return {
-      score: evaluateBoard(fallbackGame),
-      bestMoveSan: best.san,
-      bestMoveUci: best.move ? `${best.move.from}${best.move.to}` : "",
-      depth: 2,
-      isMate: false,
-    };
-  }
-
-  public async analyzeFullGame(
-    pgnOrMoves: string | string[],
-    onProgress?: (percent: number, currentPly: number, totalPlies: number) => void
-  ): Promise<GameAnalysisReport> {
-    const game = new Chess();
-    let moves: Move[] = [];
-
-    if (typeof pgnOrMoves === "string") {
-      try {
-        game.loadPgn(pgnOrMoves);
-        moves = game.history({ verbose: true });
-      } catch {
-        const tokens = pgnOrMoves.split(/\s+/).filter((t) => !t.includes(".") && t.length > 0);
-        game.reset();
-        for (const t of tokens) {
-          try {
-            const m = game.move(t);
-            if (m) moves.push(m);
-          } catch {}
-        }
-      }
-    } else {
-      for (const san of pgnOrMoves) {
-        try {
-          const m = game.move(san);
-          if (m) moves.push(m);
-        } catch {}
-      }
-    }
-
-    const analysisGame = new Chess();
-    const analyzedMoves: AnalyzedMove[] = [];
-
-    let whiteAccSum = 0;
-    let whiteMoveCount = 0;
-    let blackAccSum = 0;
-    let blackMoveCount = 0;
-
-    const gradeCounts = {
-      w: { brilliant: 0, great: 0, best: 0, good: 0, inaccuracy: 0, mistake: 0, blunder: 0, missed_win: 0 } as Record<MoveGrade, number>,
-      b: { brilliant: 0, great: 0, best: 0, good: 0, inaccuracy: 0, mistake: 0, blunder: 0, missed_win: 0 } as Record<MoveGrade, number>,
-    };
-
-    const blunderPuzzles: AnalyzedMove[] = [];
-    const totalPlies = moves.length;
-
-    for (let index = 0; index < moves.length; index++) {
-      const move = moves[index];
-      const ply = index + 1;
-      const moveNumber = Math.floor(index / 2) + 1;
-      const color = move.color;
-      const fenBefore = analysisGame.fen();
-
-      // Evaluate position before move
-      const evalBeforeRes = await this.evaluatePosition(fenBefore, 10);
-      const rawEvalBefore = evalBeforeRes.score;
-      let bestMoveSan = evalBeforeRes.bestMoveSan || move.san;
-
-      // Compute Top N candidate lines for this position
-      const topLines = findTopMoves(new Chess(fenBefore), 3, 2);
-      if (evalBeforeRes.bestMoveSan && topLines.length > 0) {
-        const existingIdx = topLines.findIndex((l) => l.san === evalBeforeRes.bestMoveSan);
-        if (existingIdx > 0) {
-          const [match] = topLines.splice(existingIdx, 1);
-          match.score = rawEvalBefore;
-          topLines.unshift(match);
-        } else if (existingIdx === -1 && evalBeforeRes.bestMoveSan) {
-          topLines.unshift({
-            rank: 1,
-            san: evalBeforeRes.bestMoveSan,
-            score: rawEvalBefore,
-            isMate: evalBeforeRes.isMate,
-            mateIn: evalBeforeRes.mateIn,
-            pv: [evalBeforeRes.bestMoveSan],
-          });
-          if (topLines.length > 3) topLines.pop();
-        }
-        topLines.forEach((l, idx) => {
-          l.rank = idx + 1;
-        });
-      }
-      if (topLines.length > 0 && topLines[0].san) {
-        bestMoveSan = topLines[0].san;
-      }
-
-      // Apply move
-      analysisGame.move(move);
-      const fenAfter = analysisGame.fen();
-
-      // Evaluate position after move
-      const evalAfterRes = await this.evaluatePosition(fenAfter, 10);
-      const rawEvalAfter = evalAfterRes.score;
-
-      const playerEvalBefore = color === "w" ? rawEvalBefore : -rawEvalBefore;
-      const playerEvalAfter = color === "w" ? rawEvalAfter : -rawEvalAfter;
-      const evalDelta = playerEvalAfter - playerEvalBefore;
-
-      let grade: MoveGrade = "good";
-      const isPieceSac = (move.captured ? 0 : 1) && (move.piece === "q" || move.piece === "r" || move.piece === "b" || move.piece === "n");
-
-      if (evalDelta <= -400 && playerEvalBefore >= 150) {
-        grade = "missed_win";
-      } else if (evalDelta <= -250) {
-        grade = "blunder";
-      } else if (evalDelta <= -120) {
-        grade = "mistake";
-      } else if (evalDelta <= -50) {
-        grade = "inaccuracy";
-      } else if (move.san === bestMoveSan || evalDelta >= -15) {
-        if (isPieceSac && evalDelta >= 50) {
-          grade = "brilliant";
-        } else if (evalDelta >= 20) {
-          grade = "great";
-        } else {
-          grade = "best";
-        }
-      } else {
-        grade = "good";
-      }
-
-      // Accuracy formula
-      const winProbBefore = 1 / (1 + Math.pow(10, -playerEvalBefore / 400));
-      const winProbAfter = 1 / (1 + Math.pow(10, -playerEvalAfter / 400));
-      const diff = Math.max(0, winProbBefore - winProbAfter);
-      const moveAccuracy = Math.min(100, Math.max(0, Math.round(103.1668 * Math.exp(-4.354 * diff) - 3.1669)));
-
-      if (color === "w") {
-        whiteAccSum += moveAccuracy;
-        whiteMoveCount++;
-        gradeCounts.w[grade]++;
-      } else {
-        blackAccSum += moveAccuracy;
-        blackMoveCount++;
-        gradeCounts.b[grade]++;
-      }
-
-      // Generate rich, opening-aware, varied coach commentary
-      const explanation = generateCoachExplanation({
-        grade,
-        san: move.san,
-        piece: move.piece,
-        from: move.from,
-        to: move.to,
-        color,
-        captured: move.captured,
-        promotion: (move as any).promotion,
-        flags: (move as any).flags,
-        bestMoveSan,
-        evalBefore: rawEvalBefore,
-        evalAfter: rawEvalAfter,
-        ply,
-        moveNumber,
-        fenBefore,
-        fenAfter,
-        allSansSoFar: moves.slice(0, index + 1).map((m) => m.san),
-      });
-
-      const item: AnalyzedMove = {
-        ply,
-        moveNumber,
-        san: move.san,
-        from: move.from,
-        to: move.to,
-        color,
-        fenBefore,
-        fenAfter,
-        evalBefore: rawEvalBefore,
-        evalAfter: rawEvalAfter,
-        grade,
-        bestMoveSan,
-        explanation,
-        topLines,
+      const fail = (why: unknown) => {
+        console.warn("Stockfish unavailable:", why);
+        this.ready = false;
+        this.worker?.terminate();
+        this.worker = null;
+        this.emitStatus();
+        resolve(false);
       };
+      const timeout = setTimeout(() => fail("no uciok within timeout"), INIT_TIMEOUT_MS);
 
-      analyzedMoves.push(item);
-      if (grade === "blunder" || grade === "missed_win") {
-        blunderPuzzles.push(item);
-      }
+      worker.onerror = (err) => {
+        clearTimeout(timeout);
+        fail(err.message || err);
+      };
+      worker.onmessage = (e: MessageEvent) => {
+        const line = typeof e.data === "string" ? e.data : "";
+        if (line.startsWith("id name ")) this.engineName = line.slice(8).trim();
+        if (line === "uciok") {
+          worker.postMessage("isready");
+        } else if (line === "readyok" && !this.ready) {
+          clearTimeout(timeout);
+          this.ready = true;
+          this.emitStatus();
+          resolve(true);
+          this.pump();
+          return;
+        }
+        this.lineHandler?.(line);
+      };
+      worker.postMessage("uci");
+    });
+    return this.initPromise;
+  }
 
-      if (onProgress) {
-        const pct = Math.round(((index + 1) / totalPlies) * 100);
-        onProgress(pct, index + 1, totalPlies);
+  /**
+   * Queue a search. Jobs with the same `key` replace each other: a queued job
+   * with that key is cancelled, and a running one is stopped early.
+   */
+  analyze(
+    fen: string,
+    opts: SearchOptions = {},
+    { priority = "low", key }: { priority?: Priority; key?: string } = {}
+  ): Promise<SearchResult> {
+    return new Promise<SearchResult>((resolve, reject) => {
+      if (key) {
+        this.queue = this.queue.filter((j) => {
+          if (j.key === key) {
+            j.reject(new EngineCancelled());
+            return false;
+          }
+          return true;
+        });
+        if (this.running?.key === key) this.requestStop();
       }
+      const job: Job = { fen, opts, priority, key, resolve, reject };
+      if (priority === "high") {
+        const firstLow = this.queue.findIndex((j) => j.priority === "low");
+        if (firstLow === -1) this.queue.push(job);
+        else this.queue.splice(firstLow, 0, job);
+      } else {
+        this.queue.push(job);
+      }
+      void this.init().then((ok) => {
+        if (!ok) {
+          this.queue = this.queue.filter((j) => j !== job);
+          resolve(unavailableResult(fen));
+          return;
+        }
+        this.pump();
+      });
+    });
+  }
+
+  /** Cancel every queued (not yet started) low-priority job, e.g. when background sync is paused. */
+  cancelBackground() {
+    this.queue = this.queue.filter((j) => {
+      if (j.priority === "low") {
+        j.reject(new EngineCancelled());
+        return false;
+      }
+      return true;
+    });
+  }
+
+  private requestStop() {
+    if (this.running && !this.stopRequested) {
+      this.stopRequested = true;
+      this.worker?.postMessage("stop");
     }
+  }
 
-    const whiteAccuracy = whiteMoveCount > 0 ? Math.round(whiteAccSum / whiteMoveCount) : 100;
-    const blackAccuracy = blackMoveCount > 0 ? Math.round(blackAccSum / blackMoveCount) : 100;
+  private setOption(name: string, value: string) {
+    if (this.currentOptions.get(name) === value) return;
+    this.worker!.postMessage(`setoption name ${name} value ${value}`);
+    this.currentOptions.set(name, value);
+  }
 
-    let coachOverview = "";
-    if (whiteAccuracy >= 90 && blackAccuracy >= 90) {
-      coachOverview = "A game of high theoretical precision by both sides, evaluated by Stockfish 19.";
-    } else if (whiteAccuracy > blackAccuracy + 15) {
-      coachOverview = `White demonstrated superior strategic clarity and tactical control (${whiteAccuracy}% vs ${blackAccuracy}%).`;
-    } else if (blackAccuracy > whiteAccuracy + 15) {
-      coachOverview = `Black established control with superior piece coordination and tactical vigilance (${blackAccuracy}% vs ${whiteAccuracy}%).`;
+  private pump() {
+    if (!this.ready || this.running || !this.worker) return;
+    const job = this.queue.shift();
+    if (!job) return;
+    this.running = job;
+    this.stopRequested = false;
+    this.runningLines = new Map();
+
+    const { opts } = job;
+    const multipv = Math.max(1, Math.min(5, opts.multipv ?? 1));
+    this.setOption("MultiPV", String(multipv));
+    if (opts.elo) {
+      this.setOption("UCI_LimitStrength", "true");
+      this.setOption("UCI_Elo", String(Math.round(opts.elo)));
+      this.setOption("Skill Level", "20");
+    } else if (opts.skill !== undefined && opts.skill !== null) {
+      this.setOption("UCI_LimitStrength", "false");
+      this.setOption("Skill Level", String(Math.max(0, Math.min(20, Math.round(opts.skill)))));
     } else {
-      coachOverview = `A closely contested encounter with dynamic opportunities and tactical shifts (${whiteAccuracy}% vs ${blackAccuracy}%).`;
+      this.setOption("UCI_LimitStrength", "false");
+      this.setOption("Skill Level", "20");
     }
 
-    return {
-      whiteAccuracy,
-      blackAccuracy,
-      totalMoves: analyzedMoves.length,
-      moves: analyzedMoves,
-      gradeCounts,
-      coachOverview,
-      blunderPuzzles,
-    };
+    const whiteToMove = job.fen.split(" ")[1] !== "b";
+    this.lineHandler = (line) => this.handleLine(job, line, whiteToMove);
+
+    this.worker.postMessage(`position fen ${job.fen}`);
+    const go = opts.movetime ? `go movetime ${opts.movetime}` : `go depth ${opts.depth ?? 12}`;
+    this.worker.postMessage(go);
+
+    // Soft limit: ask the engine to stop and return what it has.
+    const softMs = opts.movetime ? opts.movetime + 3000 : 8000 + (opts.depth ?? 12) * 400;
+    this.runningTimer = setTimeout(() => this.requestStop(), softMs);
+    // Hard limit: the worker is stuck; restart it.
+    this.hardTimer = setTimeout(() => this.restartWorker(), softMs + 5000);
+  }
+
+  private handleLine(job: Job, line: string, whiteToMove: boolean) {
+    if (line.startsWith("info ") && line.includes(" pv ") && !line.includes("bound")) {
+      const depth = Number(line.match(/ depth (\d+)/)?.[1] ?? 0);
+      const rank = Number(line.match(/ multipv (\d+)/)?.[1] ?? 1);
+      const cp = line.match(/ score cp (-?\d+)/);
+      const mate = line.match(/ score mate (-?\d+)/);
+      const pv = line.split(" pv ")[1]?.trim().split(/\s+/) ?? [];
+      const sign = whiteToMove ? 1 : -1;
+      let score: Score;
+      if (mate) score = { cp: 0, mate: sign * Number(mate[1]) };
+      else if (cp) score = { cp: sign * Number(cp[1]), mate: null };
+      else return;
+      this.runningLines.set(rank, { rank, score, pvUci: pv, pvSan: [], depth });
+      return;
+    }
+    if (line.startsWith("bestmove")) {
+      this.finishJob(job, line.split(/\s+/)[1] ?? "");
+    }
+  }
+
+  private clearTimers() {
+    if (this.runningTimer) clearTimeout(this.runningTimer);
+    if (this.hardTimer) clearTimeout(this.hardTimer);
+    this.runningTimer = this.hardTimer = null;
+  }
+
+  private finishJob(job: Job, bestUci: string) {
+    this.clearTimers();
+    this.lineHandler = null;
+    this.running = null;
+
+    const lines = [...this.runningLines.values()].sort((a, b) => a.rank - b.rank);
+    for (const l of lines) l.pvSan = uciLineToSan(job.fen, l.pvUci);
+    const best = bestUci && bestUci !== "(none)" ? bestUci : lines[0]?.pvUci[0] ?? "";
+    job.resolve({
+      fen: job.fen,
+      bestMoveUci: best,
+      bestMoveSan: best ? uciLineToSan(job.fen, [best])[0] ?? best : "",
+      lines,
+      depth: lines[0]?.depth ?? 0,
+      source: "stockfish",
+    });
+    this.pump();
+  }
+
+  private restartWorker() {
+    console.warn("Stockfish did not respond to stop; restarting the worker.");
+    const job = this.running;
+    this.clearTimers();
+    this.running = null;
+    this.lineHandler = null;
+    this.worker?.terminate();
+    this.worker = null;
+    this.ready = false;
+    this.initPromise = null;
+    this.currentOptions.clear();
+    this.emitStatus();
+    if (job) job.resolve(unavailableResult(job.fen));
+    void this.init().then(() => this.pump());
   }
 }
 
-export const stockfishService = new StockfishEngineService();
+function unavailableResult(fen: string): SearchResult {
+  return { fen, bestMoveUci: "", bestMoveSan: "", lines: [], depth: 0, source: "unavailable" };
+}
+
+/** Convert a UCI move list to SAN from a starting FEN; stops at the first illegal move. */
+export function uciLineToSan(fen: string, uci: string[]): string[] {
+  const out: string[] = [];
+  let g: Chess;
+  try {
+    g = new Chess(fen);
+  } catch {
+    return out;
+  }
+  for (const u of uci) {
+    try {
+      const m = g.move({ from: u.slice(0, 2), to: u.slice(2, 4), promotion: u[4] });
+      out.push(m.san);
+    } catch {
+      break;
+    }
+  }
+  return out;
+}
+
+/** Apply a UCI move list to a FEN and return the resulting FENs after each move. */
+export function uciLineFens(fen: string, uci: string[]): string[] {
+  const out: string[] = [];
+  const g = new Chess(fen);
+  for (const u of uci) {
+    try {
+      g.move({ from: u.slice(0, 2), to: u.slice(2, 4), promotion: u[4] });
+      out.push(g.fen());
+    } catch {
+      break;
+    }
+  }
+  return out;
+}
+
+export const stockfishService = new StockfishService();

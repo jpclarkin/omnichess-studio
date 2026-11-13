@@ -26,10 +26,11 @@ export interface BotProfile {
   id: string;
   name: string;
   level: string;
-  rating: number;
+  /** Display label for strength, e.g. "Engine Elo 1500". Not a Chess.com/Lichess rating. */
+  strengthLabel: string;
   description: string;
-  depth: number;
-  randomness: number;
+  /** Stockfish settings. `elo` uses UCI_LimitStrength; `skill` uses Skill Level 0–20. */
+  engine: { elo?: number; skill?: number; movetime: number };
 }
 
 export interface MoveRecord {
@@ -55,6 +56,14 @@ export interface EngineCandidateLine {
   pv: string[]; // Continuation moves (e.g. ["d5", "exd5", "exd5"])
 }
 
+export interface EngineScore {
+  cp: number;
+  /** Moves to mate, signed from White's POV; null if not a mate score. */
+  mate: number | null;
+}
+
+export type GamePhase = "opening" | "middlegame" | "endgame";
+
 export interface AnalyzedMove {
   ply: number;
   moveNumber: number;
@@ -70,6 +79,21 @@ export interface AnalyzedMove {
   bestMoveSan: string;
   explanation: string;
   topLines?: EngineCandidateLine[];
+  /** Fields below are produced by the Stockfish analyzer. */
+  uci?: string;
+  bestMoveUci?: string;
+  scoreBefore?: EngineScore;
+  scoreAfter?: EngineScore;
+  /** Mover's win-probability drop (0..1). */
+  winDrop?: number;
+  accuracy?: number;
+  phase?: GamePhase;
+  /** Seconds left on the mover's clock after the move, from the PGN [%clk]. */
+  clock?: number | null;
+  /** Engine's best line from the position before the move (SAN). */
+  bestLineSan?: string[];
+  /** Engine's best continuation for the opponent after this move (UCI). */
+  replyLineUci?: string[];
 }
 
 export interface GameAnalysisReport {
@@ -83,6 +107,9 @@ export interface GameAnalysisReport {
   };
   coachOverview: string;
   blunderPuzzles: AnalyzedMove[];
+  /** Engine that produced the report, e.g. "Stockfish 18 Lite WASM". */
+  engineName?: string;
+  depth?: number;
 }
 
 export interface TacticalPuzzle {

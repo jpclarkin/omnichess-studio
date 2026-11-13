@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { Chess, type Square } from "chess.js";
 import { Chessboard } from "./Chessboard";
 import { OPENINGS_DATABASE, detectOpening } from "../data/openings";
-import { findBestMove } from "../engine/chessEngine";
+import { stockfishService } from "../engine/stockfishService";
 import { soundManager } from "../audio/soundManager";
 import { queryLiveOpening, type CloudOpeningResponse } from "../services/cloudOpeningService";
 import { queryTablebase, countPiecesOnBoard, type TablebaseEvaluation } from "../services/tablebaseService";
@@ -38,44 +38,31 @@ export const OpeningExplorer: React.FC<OpeningExplorerProps> = ({ theme }) => {
 
   // Phase 2: Live Cloud Explorer & 7-Piece Tablebase states
   const [activeTab, setActiveTab] = useState<"cloud" | "encyclopedia">("cloud");
-  const [cloudOpening, setCloudOpening] = useState<CloudOpeningResponse | null>(null);
-  const [isLoadingCloud, setIsLoadingCloud] = useState(false);
-  const [tablebaseEval, setTablebaseEval] = useState<TablebaseEvaluation | null>(null);
-  const [isLoadingTablebase, setIsLoadingTablebase] = useState(false);
+  const [cloudResult, setCloudResult] = useState<{ fen: string; data: CloudOpeningResponse | null } | null>(null);
+  const [tablebaseResult, setTablebaseResult] = useState<{ fen: string; data: TablebaseEvaluation | null } | null>(null);
+
+  const currentFen = game.fen();
+  const wantsTablebase = countPiecesOnBoard(currentFen) <= 7;
+  const cloudOpening = cloudResult?.fen === currentFen ? cloudResult.data : null;
+  const isLoadingCloud = cloudResult?.fen !== currentFen;
+  const tablebaseEval = wantsTablebase && tablebaseResult?.fen === currentFen ? tablebaseResult.data : null;
+  const isLoadingTablebase = wantsTablebase && tablebaseResult?.fen !== currentFen;
 
   // Sync Live Cloud Book & Tablebase on FEN changes
   useEffect(() => {
     let isCancelled = false;
-    const currentFen = game.fen();
-    const pieceCount = countPiecesOnBoard(currentFen);
-
-    // 1. Tablebase query if <= 7 pieces
-    if (pieceCount <= 7) {
-      setIsLoadingTablebase(true);
+    if (wantsTablebase) {
       queryTablebase(currentFen).then((tb) => {
-        if (!isCancelled) {
-          setTablebaseEval(tb);
-          setIsLoadingTablebase(false);
-        }
+        if (!isCancelled) setTablebaseResult({ fen: currentFen, data: tb });
       });
-    } else {
-      setTablebaseEval(null);
-      setIsLoadingTablebase(false);
     }
-
-    // 2. Cloud opening query
-    setIsLoadingCloud(true);
     queryLiveOpening(currentFen).then((cloud) => {
-      if (!isCancelled) {
-        setCloudOpening(cloud);
-        setIsLoadingCloud(false);
-      }
+      if (!isCancelled) setCloudResult({ fen: currentFen, data: cloud });
     });
-
     return () => {
       isCancelled = true;
     };
-  }, [game]);
+  }, [currentFen, wantsTablebase]);
 
   const loadOpening = useCallback((opening: OpeningData) => {
     const newGame = new Chess();
@@ -179,11 +166,13 @@ export const OpeningExplorer: React.FC<OpeningExplorerProps> = ({ theme }) => {
     setTimeout(() => setCopiedFen(false), 2000);
   };
 
-  const handleFindNextMove = () => {
-    const best = findBestMove(game, 3);
-    if (best && best.san) {
-      setEngineSuggestion(best.san);
+  const handleFindNextMove = async () => {
+    const res = await stockfishService.analyze(game.fen(), { depth: 18 }, { priority: "high", key: "explorer" }).catch(() => null);
+    if (res?.source === "stockfish" && res.bestMoveSan) {
+      setEngineSuggestion(res.bestMoveSan);
       soundManager.playSuccess();
+    } else {
+      setEngineSuggestion(null);
     }
   };
 
@@ -291,9 +280,9 @@ export const OpeningExplorer: React.FC<OpeningExplorerProps> = ({ theme }) => {
             </div>
 
             <button
-              onClick={handleFindNextMove}
+              onClick={() => void handleFindNextMove()}
               className="py-1.5 px-2.5 bg-[#222736] hover:bg-[#2c3245] text-slate-200 text-xs font-semibold rounded-lg border border-[#333a4d] flex items-center gap-1.5 transition cursor-pointer"
-              title="Calculate best move with Stockfish 19"
+              title="Calculate best move with Stockfish"
             >
               <Cpu className="w-3.5 h-3.5 text-sky-400" />
               Engine Move
@@ -304,7 +293,7 @@ export const OpeningExplorer: React.FC<OpeningExplorerProps> = ({ theme }) => {
           {engineSuggestion && (
             <div className="bg-[#11131a] border border-emerald-500/50 p-2.5 rounded-lg mb-3 flex items-center justify-between animate-in fade-in">
               <span className="text-xs text-slate-300">
-                Stockfish 19: <strong className="font-mono text-emerald-400 text-xs ml-1">{engineSuggestion}</strong>
+                Stockfish: <strong className="font-mono text-emerald-400 text-xs ml-1">{engineSuggestion}</strong>
               </span>
               <button
                 onClick={() => handlePlayContinuation(engineSuggestion)}
@@ -487,7 +476,7 @@ export const OpeningExplorer: React.FC<OpeningExplorerProps> = ({ theme }) => {
                   </div>
                   <p className="text-[11px] leading-relaxed">
                     This exact position has no direct continuations recorded in the master cloud book. Click
-                    <strong> Engine Move</strong> above to calculate the most accurate continuation with Stockfish 19.
+                    <strong> Engine Move</strong> above to calculate the most accurate continuation with Stockfish.
                   </p>
                 </div>
               ) : null}

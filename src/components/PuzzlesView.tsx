@@ -22,7 +22,6 @@ import {
 
 interface PuzzlesViewProps {
   theme: BoardTheme;
-  customBlunders?: unknown[];
 }
 
 type PuzzleMode = "daily" | "ranked" | "themes";
@@ -41,7 +40,7 @@ const THEMES = [
   "Endgame",
 ];
 
-export const PuzzlesView: React.FC<PuzzlesViewProps> = ({ theme, customBlunders: _customBlunders = [] }) => {
+export const PuzzlesView: React.FC<PuzzlesViewProps> = ({ theme }) => {
   const [mode, setMode] = useState<PuzzleMode>("daily");
   const [selectedTheme, setSelectedTheme] = useState<string>("All Themes");
   const [difficultyTier, setDifficultyTier] = useState<"novice" | "intermediate" | "advanced" | "master" | "all">("all");

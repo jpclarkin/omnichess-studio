@@ -1,6 +1,6 @@
 import React from "react";
-import type { GameMode, BoardTheme, PerformancePlan } from "../types/chess";
-import { Cpu, Users, BarChart2, Target, BookOpen, GraduationCap, Volume2, VolumeX, Palette, Globe, Bot } from "lucide-react";
+import type { GameMode, BoardTheme } from "../types/chess";
+import { Cpu, Users, BarChart2, Target, BookOpen, GraduationCap, Volume2, VolumeX, Palette, Bot } from "lucide-react";
 
 interface NavbarProps {
   currentMode: GameMode;
@@ -9,10 +9,10 @@ interface NavbarProps {
   onChangeTheme: (theme: BoardTheme) => void;
   isMuted: boolean;
   onToggleMute: () => void;
-  onOpenImportModal: () => void;
   onOpenCoach?: () => void;
-  playerProfile?: PerformancePlan;
-  onOpenProfile?: () => void;
+  /** e.g. "Stockfish 18 Lite WASM", or null while loading / unavailable. */
+  engineLabel: string | null;
+  engineError?: boolean;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -22,16 +22,15 @@ export const Navbar: React.FC<NavbarProps> = ({
   onChangeTheme,
   isMuted,
   onToggleMute,
-  onOpenImportModal,
   onOpenCoach,
-  playerProfile,
-  onOpenProfile,
+  engineLabel,
+  engineError,
 }) => {
   const modes: { id: GameMode; label: string; icon: React.ReactNode }[] = [
     { id: "vs-computer", label: "Play vs Engine", icon: <Cpu className="w-4 h-4" /> },
     { id: "pass-play", label: "Pass & Play", icon: <Users className="w-4 h-4" /> },
     { id: "analysis", label: "Game Review", icon: <BarChart2 className="w-4 h-4" /> },
-    { id: "training", label: "Coach & Drills", icon: <GraduationCap className="w-4 h-4" /> },
+    { id: "training", label: "My Improvement", icon: <GraduationCap className="w-4 h-4" /> },
     { id: "puzzles", label: "Tactics Trainer", icon: <Target className="w-4 h-4" /> },
     { id: "openings", label: "Opening Explorer", icon: <BookOpen className="w-4 h-4" /> },
   ];
@@ -54,12 +53,17 @@ export const Navbar: React.FC<NavbarProps> = ({
           <div>
             <div className="flex items-center gap-2">
               <span className="font-bold text-sm text-white tracking-widest uppercase">OMNICHESS</span>
-              <span className="text-[10px] font-mono text-emerald-300 border border-emerald-600/60 px-1.5 py-0.2 rounded bg-emerald-950/60 font-semibold">
-                Stockfish 19
+              <span
+                className={`text-[10px] font-mono px-1.5 py-0.2 rounded font-semibold border ${
+                  engineError ? "text-amber-300 border-amber-600/60 bg-amber-950/60" : "text-emerald-300 border-emerald-600/60 bg-emerald-950/60"
+                }`}
+                title={engineError ? "Stockfish could not start in this browser" : "Engine used for analysis and bots"}
+              >
+                {engineError ? "Engine unavailable" : engineLabel ?? "Loading engine…"}
               </span>
             </div>
             <p className="text-[11px] text-slate-400">
-              Chess Analysis, Engine Play & Repertoire Training
+              Play, review and improve from your own games
             </p>
           </div>
         </div>
@@ -87,46 +91,17 @@ export const Navbar: React.FC<NavbarProps> = ({
 
         {/* Utilities & Action Buttons */}
         <div className="flex items-center gap-2">
-          {/* Player Profile Button */}
-          {onOpenProfile && (
-            <button
-              onClick={onOpenProfile}
-              title="View Player Profile & Diagnostics"
-              className="flex items-center gap-2 px-2.5 py-1.5 bg-[#161821] hover:bg-[#222736] text-slate-200 hover:text-white rounded-lg border border-[#262a36] text-xs font-medium transition cursor-pointer shadow-sm"
-            >
-              <div className="w-5 h-5 rounded-full bg-gradient-to-tr from-emerald-600 to-teal-500 flex items-center justify-center text-[10px] font-bold text-white uppercase">
-                {playerProfile?.profileUsername?.charAt(0) || playerProfile?.playerName?.charAt(0) || "P"}
-              </div>
-              <span className="font-semibold max-w-[90px] truncate hidden sm:inline">
-                {playerProfile?.profileUsername || playerProfile?.playerName || "Profile"}
-              </span>
-              <span className="text-[10px] font-mono text-emerald-400 font-bold bg-[#10121a] px-1.5 py-0.2 rounded border border-[#293246]">
-                {playerProfile?.overallRating || 1600}
-              </span>
-            </button>
-          )}
-
           {/* AI Coach Button */}
           {onOpenCoach && (
             <button
               onClick={onOpenCoach}
-              title="Open Grandmaster AI Coach"
+              title="Open AI Coach"
               className="flex items-center gap-1.5 px-2.5 py-1.5 bg-emerald-950/70 hover:bg-emerald-900/80 text-emerald-300 hover:text-white rounded-lg border border-emerald-500/50 text-xs font-medium transition cursor-pointer shadow-sm"
             >
               <Bot className="w-3.5 h-3.5 text-emerald-400" />
               <span>AI Coach</span>
             </button>
           )}
-
-          {/* Import from Chess.com / Lichess */}
-          <button
-            onClick={onOpenImportModal}
-            title="Import games from Chess.com or Lichess"
-            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-[#161821] hover:bg-[#222736] text-slate-200 hover:text-white rounded-lg border border-[#262a36] text-xs font-medium transition cursor-pointer"
-          >
-            <Globe className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Import Games</span>
-          </button>
 
           {/* Board Theme */}
           <div className="flex items-center gap-1.5 bg-[#161821] px-2.5 py-1.5 rounded-lg border border-[#262a36]">

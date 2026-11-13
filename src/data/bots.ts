@@ -1,41 +1,68 @@
 import type { BotProfile, TimeControl } from "../types/chess";
 
+/**
+ * All bots are Stockfish with its built-in strength limiter.
+ * - Levels with `elo` use UCI_Elo (min 1320). Stockfish calibrates this against
+ *   other engines, not humans, so it is NOT the same scale as Chess.com or
+ *   Lichess ratings; treat it as a relative difficulty ladder.
+ * - Levels below that use Skill Level, which has no published Elo.
+ */
 export const BOT_PROFILES: BotProfile[] = [
   {
-    id: "engine-novice",
-    name: "Engine — Novice",
+    id: "sf-skill-0",
+    name: "Stockfish — Starter",
     level: "Level 1",
-    rating: 800,
-    description: "Evaluates 1 ply. Suitable for introductory play and basic tactical drills.",
-    depth: 1,
-    randomness: 0.35,
+    strengthLabel: "Skill Level 0",
+    description: "Weakest Stockfish setting. Makes frequent mistakes; good for practicing basic tactics and checkmates.",
+    engine: { skill: 0, movetime: 150 },
   },
   {
-    id: "engine-intermediate",
-    name: "Engine — Intermediate",
+    id: "sf-skill-4",
+    name: "Stockfish — Casual",
     level: "Level 2",
-    rating: 1400,
-    description: "Evaluates 2 plies. Demonstrates basic piece activity and fundamental central control.",
-    depth: 2,
-    randomness: 0.12,
+    strengthLabel: "Skill Level 4",
+    description: "Plays reasonable moves but regularly misses tactics.",
+    engine: { skill: 4, movetime: 200 },
   },
   {
-    id: "engine-advanced",
-    name: "Engine — Advanced",
+    id: "sf-elo-1400",
+    name: "Stockfish — Club",
     level: "Level 3",
-    rating: 2000,
-    description: "Evaluates 3 plies with alpha-beta search. Solid positional coordination and tactical precision.",
-    depth: 3,
-    randomness: 0.02,
+    strengthLabel: "Engine Elo 1400",
+    description: "Stockfish limited with UCI_Elo 1400 (engine scale).",
+    engine: { elo: 1400, movetime: 400 },
   },
   {
-    id: "engine-master",
-    name: "Engine — Master",
+    id: "sf-elo-1700",
+    name: "Stockfish — Strong Club",
     level: "Level 4",
-    rating: 2600,
-    description: "Evaluates 4+ plies with quiescence search. Rigorous tactical calculation and endgame conversion.",
-    depth: 4,
-    randomness: 0,
+    strengthLabel: "Engine Elo 1700",
+    description: "Stockfish limited with UCI_Elo 1700 (engine scale).",
+    engine: { elo: 1700, movetime: 500 },
+  },
+  {
+    id: "sf-elo-2000",
+    name: "Stockfish — Expert",
+    level: "Level 5",
+    strengthLabel: "Engine Elo 2000",
+    description: "Stockfish limited with UCI_Elo 2000 (engine scale).",
+    engine: { elo: 2000, movetime: 600 },
+  },
+  {
+    id: "sf-elo-2400",
+    name: "Stockfish — Master",
+    level: "Level 6",
+    strengthLabel: "Engine Elo 2400",
+    description: "Stockfish limited with UCI_Elo 2400 (engine scale).",
+    engine: { elo: 2400, movetime: 800 },
+  },
+  {
+    id: "sf-full",
+    name: "Stockfish — Full Strength",
+    level: "Level 7",
+    strengthLabel: "Unlimited",
+    description: "No strength limit (1 second per move). Far stronger than any human.",
+    engine: { movetime: 1000 },
   },
 ];
 

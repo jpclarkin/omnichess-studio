@@ -35,16 +35,16 @@ export interface CoachMessage {
   timestamp: string;
 }
 
-export type OpenSourceModelId =
-  | "builtin-gm"
-  | "llama-3.3-70b"
-  | "deepseek-r1-70b"
-  | "qwen-2.5-72b"
-  | "ollama-local";
+export type OpenSourceModelId = "builtin-gm" | "groq" | "ollama-local";
+
+export const DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b";
 
 export interface CoachSettings {
   selectedModel: OpenSourceModelId;
+  /** Groq API key. Stored unencrypted in this browser's localStorage. */
   apiKey?: string;
+  /** Groq model id, e.g. "openai/gpt-oss-120b". Use listGroqModels() to see what's available. */
+  groqModel?: string;
   ollamaEndpoint?: string;
   ollamaModel?: string;
 }
@@ -67,7 +67,12 @@ class AiCoachService {
     try {
       const saved = localStorage.getItem(SETTINGS_KEY);
       if (saved) {
-        this.settings = { ...this.settings, ...JSON.parse(saved) };
+        const parsed = JSON.parse(saved);
+        // Migrate per-model ids from earlier versions to the single Groq option.
+        if (["llama-3.3-70b", "deepseek-r1-70b", "qwen-2.5-72b"].includes(parsed.selectedModel)) {
+          parsed.selectedModel = "groq";
+        }
+        this.settings = { ...this.settings, ...parsed };
       }
     } catch (e) {
       console.warn("Could not load coach settings:", e);
@@ -93,7 +98,7 @@ class AiCoachService {
     const parts: string[] = [];
 
     parts.push(
-      "You are a FIDE Senior Trainer and Grandmaster AI Chess Coach within OmniChess Studio.",
+      "You are an experienced, plain-spoken chess coach inside OmniChess Studio. Base every claim on the engine data provided; if you are unsure, say so.",
       "Your tone is dignified, articulate, encouraging, and technically rigorous. Never use internet memes or casual slang.",
       "Always reference standard algebraic notation (e.g. 14... Nxd4, 15. Qh5+) when explaining moves.",
       "Your student is an aspiring player dedicated to deliberate improvement."
@@ -133,7 +138,7 @@ class AiCoachService {
     if (context.playedMove && context.engineMove) {
       parts.push(
         `Reviewing Move ${context.moveNumber || ""}: Played Move was ${context.playedMove.san} (${context.playedMove.grade.toUpperCase()}, eval: ${(context.playedMove.eval / 100).toFixed(2)}).`,
-        `Stockfish 19 Recommended Continuation: ${context.engineMove.san} (eval: ${(context.engineMove.eval / 100).toFixed(2)}).`,
+        `Stockfish Recommended Continuation: ${context.engineMove.san} (eval: ${(context.engineMove.eval / 100).toFixed(2)}).`,
         context.playedMove.explanation ? `Engine note: ${context.playedMove.explanation}` : ""
       );
     }
@@ -169,25 +174,29 @@ class AiCoachService {
       } catch (err: any) {
         console.warn("Ollama connection failed, falling back to built-in GM coach:", err);
         return (
-          `*(Ollama local connection to ${this.settings.ollamaEndpoint || "http://localhost:11434"} failed. Falling back to Built-in Grandmaster Engine)*\n\n` +
+          `*(Ollama local connection to ${this.settings.ollamaEndpoint || "http://localhost:11434"} failed. Answering with the built-in coach instead)*\n\n` +
           this.generateBuiltinResponse(userMessage, context)
         );
       }
     }
 
-    // 2. If Groq API Key is provided for Llama 3.3 70B, DeepSeek-R1, or Qwen 2.5
-    if (
-      (model === "llama-3.3-70b" || model === "deepseek-r1-70b" || model === "qwen-2.5-72b") &&
-      this.settings.apiKey
-    ) {
+    // 2. Groq-hosted open model
+    if (model === "groq") {
+      if (!this.settings.apiKey) {
+        return "*(No Groq API key set — answering with the built-in coach instead.)*\n\n" + this.generateBuiltinResponse(userMessage, context);
+      }
       try {
-        return await this.callGroqOrOpenRouter(userMessage, history, context, model);
-      } catch (err: any) {
-        console.warn("Open model API request failed, falling back to built-in GM coach:", err);
+        return await this.callGroq(userMessage, history, context);
+      } catch (err) {
+        console.warn("Groq request failed, falling back to built-in coach:", err);
+        return (
+          `*(Groq request failed: ${(err as Error).message}. Answering with the built-in coach instead.)*\n\n` +
+          this.generateBuiltinResponse(userMessage, context)
+        );
       }
     }
 
-    // 3. Default Built-in Grandmaster Reasoning Engine
+    // 3. Default Built-in rule-based coach
     return this.generateBuiltinResponse(userMessage, context);
   }
 
@@ -227,20 +236,21 @@ class AiCoachService {
     return data.message?.content || "No response received from local Ollama model.";
   }
 
-  private async callGroqOrOpenRouter(
-    userMessage: string,
-    history: CoachMessage[],
-    context: CoachContext,
-    modelId: OpenSourceModelId
-  ): Promise<string> {
-    const systemPrompt = this.generateSystemPrompt(context);
+  /** Model ids available to this API key (Groq's OpenAI-compatible /models endpoint). */
+  public async listGroqModels(apiKey = this.settings.apiKey): Promise<string[]> {
+    if (!apiKey) return [];
+    const res = await fetch("https://api.groq.com/openai/v1/models", { headers: { Authorization: `Bearer ${apiKey}` } });
+    if (!res.ok) throw new Error(`Groq returned ${res.status}`);
+    const json = await res.json();
+    return (json.data ?? [])
+      .filter((m: { id: string; active?: boolean }) => m.active !== false && !/whisper|tts|orpheus|guard/i.test(m.id))
+      .map((m: { id: string }) => m.id)
+      .sort();
+  }
 
-    let apiModel = "llama-3.3-70b-versatile";
-    if (modelId === "deepseek-r1-70b") {
-      apiModel = "deepseek-r1-distill-llama-70b";
-    } else if (modelId === "qwen-2.5-72b") {
-      apiModel = "qwen-2.5-72b-instruct";
-    }
+  private async callGroq(userMessage: string, history: CoachMessage[], context: CoachContext): Promise<string> {
+    const systemPrompt = this.generateSystemPrompt(context);
+    const apiModel = this.settings.groqModel || DEFAULT_GROQ_MODEL;
 
     const messages = [
       { role: "system", content: systemPrompt },
@@ -266,7 +276,8 @@ class AiCoachService {
     });
 
     if (!res.ok) {
-      throw new Error(`Model API call returned ${res.status}`);
+      const detail = await res.json().catch(() => null);
+      throw new Error(detail?.error?.message ?? `HTTP ${res.status}`);
     }
 
     const json = await res.json();
@@ -274,7 +285,7 @@ class AiCoachService {
   }
 
   /**
-   * Built-in Grandmaster Chess Coaching Engine (offline, instantaneous, deeply grounded in Stockfish 19)
+   * Built-in rule-based coach (offline). Template answers built from the engine data in the context.
    */
   public generateBuiltinResponse(userMessage: string, context: CoachContext): string {
     const lower = userMessage.toLowerCase();
@@ -291,7 +302,7 @@ class AiCoachService {
           `#### Why ${played.san} Fails:\n` +
           `- **Tactical Deficit**: ${played.explanation || `It disrupts piece harmony and creates an exploitable target on the board.`}\n` +
           `- **Underlying Vulnerability**: In positions of high central tension, committal moves must strictly account for opposing forcing checks and captures.\n\n` +
-          `#### Why Stockfish 19 Recommends **${engine.san}**:\n` +
+          `#### Why Stockfish Recommends **${engine.san}**:\n` +
           `- **${engine.san}** addresses the critical square, optimizing your piece coordination while keeping the position structurally sound.\n` +
           `- It prevents opponent tactical counterplay and maintains an evaluation of **${(engine.eval / 100).toFixed(2)}**.\n\n` +
           `**Coach's Advice**: Before making committal moves, always scan for undefended minor pieces and forced tactical sequences.`
@@ -334,7 +345,7 @@ class AiCoachService {
 
       return (
         `### Your Personalized Training Prescription\n\n` +
-        `Based on games analyzed by Stockfish 19:\n\n` +
+        `Based on games analyzed by Stockfish:\n\n` +
         `**Diagnosed Areas for Immediate Focus**:\n${weaknessesText}\n\n` +
         `**Actionable Regimen**:\n` +
         `1. **Personal Drill Lab**: Spend 15 minutes daily solving the customized drills extracted from your own blunders in the **Coach & Drills** tab.\n` +
@@ -357,11 +368,11 @@ class AiCoachService {
 
     // Generic Grandmaster Response
     return (
-      `### Grandmaster Position Assessment\n\n` +
+      `### Position Assessment\n\n` +
       `Analyzing position **${context.fen.split(" ")[0]}** (${context.turn === "w" ? "White" : "Black"} to move):\n\n` +
       `- **Material & Structure**: Evaluate the open files and identify any pawn weaknesses (isolated or backward pawns).\n` +
       `- **Tactical Tension**: Search for alignments: queen and king on the same file, rooks on open files, and loose (undefended) minor pieces.\n` +
-      `- **Stockfish 19 Recommendation**: Focus on activating your least active piece and placing it where it controls key central squares.\n\n` +
+      `- **Stockfish Recommendation**: Focus on activating your least active piece and placing it where it controls key central squares.\n\n` +
       `Feel free to ask for a specific tactical breakdown of any candidate move, opening continuation, or advice on your training regimen!`
     );
   }
