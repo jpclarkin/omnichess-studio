@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import type { GameAnalysisReport, AnalyzedMove, MoveGrade, EngineCandidateLine } from "../types/chess";
-import { estimatePerformance, type PerformanceEstimate } from "../engine/grading";
+import { estimatePerformance, type PerformanceEstimate } from "../engine/performanceModel";
 import { queryTablebase, countPiecesOnBoard, type TablebaseEvaluation } from "../services/tablebaseService";
 import { queryLiveOpening, type CloudOpeningResponse } from "../services/cloudOpeningService";
 import {
@@ -29,6 +29,8 @@ import {
 
 interface AnalysisPanelProps {
   report: GameAnalysisReport;
+  /** Time control of the game (bullet / blitz / rapid), when known; picks the performance calibration. */
+  timeClass?: string | null;
   selectedPly: number;
   onSelectPly: (ply: number) => void;
   onRetryBlunder: (move: AnalyzedMove) => void;
@@ -40,26 +42,35 @@ interface AnalysisPanelProps {
   onPreviewEngineMove?: (bestMoveSan: string | string[], fenBefore: string) => void;
 }
 
-const PerformanceLine: React.FC<{ est: PerformanceEstimate | null }> = ({ est }) => (
-  <div
-    className="mt-2 text-center"
-    title={
-      est
-        ? `Estimated from average centipawn loss (${est.acpl} cp over ${est.moves} moves). A ballpark figure, not a platform rating.`
-        : "Too few moves to estimate."
-    }
-  >
-    <div className="text-[10px] uppercase tracking-wide text-slate-500">Est. performance</div>
-    {est ? (
-      <>
-        <div className="text-lg font-bold font-mono text-slate-100">~{est.rating}</div>
-        <div className="text-[10px] text-slate-500 font-mono">±{est.margin} · {est.acpl} avg cp loss</div>
-      </>
-    ) : (
-      <div className="text-sm text-slate-500 font-mono">—</div>
-    )}
-  </div>
-);
+const PerformanceLine: React.FC<{ est: PerformanceEstimate | null }> = ({ est }) => {
+  const scope = est && est.basis !== "all" ? ` ${est.basis}` : "";
+  const tip = !est
+    ? "Too few moves to estimate."
+    : est.kind === "uninformative"
+      ? "In bullet, how accurately people play looks almost the same from 400 to 1800 rated (about 84% accuracy throughout, in 520 rated Lichess bullet games we analyzed), because games are short and often decided by the clock. So this game can't tell us the rating, and we don't guess."
+      : `Calibrated on rated Lichess${scope} games analyzed the same way as this one: 80% of players who produce games like this were rated between ${est.low} and ${est.high} (typical ${est.mid}). Lichess scale; Chess.com ratings usually run lower. One game is a weak signal. ${est.moves} moves, ${est.acpl} avg cp loss.`;
+  return (
+    <div className="mt-2 text-center" title={tip}>
+      <div className="text-[10px] uppercase tracking-wide text-slate-500">Plays like · Lichess scale</div>
+      {!est ? (
+        <div className="text-sm text-slate-500 font-mono">—</div>
+      ) : est.kind === "uninformative" ? (
+        <div className="text-[11px] text-slate-500 leading-tight mt-0.5">
+          No estimate for bullet:
+          <br />
+          play quality doesn&apos;t track rating
+        </div>
+      ) : (
+        <>
+          <div className="text-lg font-bold font-mono text-slate-100">~{est.mid}</div>
+          <div className="text-[10px] text-slate-500 font-mono">
+            likely {est.low}–{est.high} · {est.basis === "all" ? "any time control" : est.basis}
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
 
 export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
   report,
@@ -72,10 +83,14 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
   onAddToTrainingPlan,
   onOpenCoach,
   onPreviewEngineMove,
+  timeClass,
 }) => {
   const perf = useMemo(
-    () => ({ w: estimatePerformance(report.moves, "w"), b: estimatePerformance(report.moves, "b") }),
-    [report.moves],
+    () => ({
+      w: estimatePerformance(report.moves, "w", { accuracy: report.whiteAccuracy, timeClass }),
+      b: estimatePerformance(report.moves, "b", { accuracy: report.blackAccuracy, timeClass }),
+    }),
+    [report.moves, report.whiteAccuracy, report.blackAccuracy, timeClass],
   );
   const [copiedPgn, setCopiedPgn] = useState(false);
   const [copiedFen, setCopiedFen] = useState(false);

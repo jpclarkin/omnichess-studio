@@ -1,0 +1,208 @@
+{
+  "model": "logAcpl300+errors+decided",
+  "features": [
+    "logAcpl300",
+    "errors",
+    "decided"
+  ],
+  "generated": "2026-11-25",
+  "note": "Ratings are on the Lichess scale. table: composite score -> 10th/50th/90th percentile of true ratings (from cross-validated predictions).",
+  "classes": {
+    "Bullet": {
+      "n": 520,
+      "weights": [
+        2436.3053,
+        -105.9543,
+        -958.4296,
+        -563.2538
+      ],
+      "table": [
+        {
+          "est": 1371,
+          "lo": 770,
+          "mid": 1282,
+          "hi": 2069
+        },
+        {
+          "est": 1503,
+          "lo": 788,
+          "mid": 1467,
+          "hi": 2393
+        },
+        {
+          "est": 1581,
+          "lo": 824,
+          "mid": 1594,
+          "hi": 2351
+        },
+        {
+          "est": 1644,
+          "lo": 850,
+          "mid": 1668,
+          "hi": 2331
+        },
+        {
+          "est": 1716,
+          "lo": 1140,
+          "mid": 1788,
+          "hi": 2385
+        },
+        {
+          "est": 1867,
+          "lo": 896,
+          "mid": 1838,
+          "hi": 2573
+        }
+      ],
+      "informativeness": 0.06,
+      "informative": false
+    },
+    "Blitz": {
+      "n": 520,
+      "weights": [
+        3543.9918,
+        -293.4314,
+        -1746.9692,
+        -1236.1554
+      ],
+      "table": [
+        {
+          "est": 1058,
+          "lo": 701,
+          "mid": 943,
+          "hi": 1424
+        },
+        {
+          "est": 1339,
+          "lo": 764,
+          "mid": 1336,
+          "hi": 2075
+        },
+        {
+          "est": 1522,
+          "lo": 930,
+          "mid": 1475,
+          "hi": 2093
+        },
+        {
+          "est": 1687,
+          "lo": 1120,
+          "mid": 1876,
+          "hi": 2376
+        },
+        {
+          "est": 1858,
+          "lo": 1202,
+          "mid": 1817,
+          "hi": 2445
+        },
+        {
+          "est": 2217,
+          "lo": 1538,
+          "mid": 2253,
+          "hi": 2656
+        }
+      ],
+      "informativeness": 0.29,
+      "informative": true
+    },
+    "Rapid": {
+      "n": 520,
+      "weights": [
+        3718.5122,
+        -384.8321,
+        -1288.7428,
+        -1152.998
+      ],
+      "table": [
+        {
+          "est": 965,
+          "lo": 656,
+          "mid": 926,
+          "hi": 1368
+        },
+        {
+          "est": 1285,
+          "lo": 813,
+          "mid": 1186,
+          "hi": 1853
+        },
+        {
+          "est": 1500,
+          "lo": 880,
+          "mid": 1600,
+          "hi": 2100
+        },
+        {
+          "est": 1690,
+          "lo": 1181,
+          "mid": 1654,
+          "hi": 2176
+        },
+        {
+          "est": 1915,
+          "lo": 1341,
+          "mid": 2023,
+          "hi": 2400
+        },
+        {
+          "est": 2354,
+          "lo": 1772,
+          "mid": 2364,
+          "hi": 3008
+        }
+      ],
+      "informativeness": 0.34,
+      "informative": true
+    },
+    "ALL": {
+      "n": 1560,
+      "weights": [
+        3400.8878,
+        -301.5181,
+        -1301.39,
+        -981.3508
+      ],
+      "table": [
+        {
+          "est": 1129,
+          "lo": 687,
+          "mid": 991,
+          "hi": 1643
+        },
+        {
+          "est": 1376,
+          "lo": 766,
+          "mid": 1266,
+          "hi": 2119
+        },
+        {
+          "est": 1528,
+          "lo": 873,
+          "mid": 1545,
+          "hi": 2229
+        },
+        {
+          "est": 1664,
+          "lo": 930,
+          "mid": 1706,
+          "hi": 2297
+        },
+        {
+          "est": 1821,
+          "lo": 1192,
+          "mid": 1869,
+          "hi": 2438
+        },
+        {
+          "est": 2161,
+          "lo": 1348,
+          "mid": 2219,
+          "hi": 2776
+        }
+      ],
+      "informativeness": 0.19,
+      "informative": true
+    }
+  }
+}
