@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import type { GameAnalysisReport, AnalyzedMove, MoveGrade, EngineCandidateLine } from "../types/chess";
+import { estimatePerformance, type PerformanceEstimate } from "../engine/grading";
 import { queryTablebase, countPiecesOnBoard, type TablebaseEvaluation } from "../services/tablebaseService";
 import { queryLiveOpening, type CloudOpeningResponse } from "../services/cloudOpeningService";
 import {
@@ -39,6 +40,27 @@ interface AnalysisPanelProps {
   onPreviewEngineMove?: (bestMoveSan: string | string[], fenBefore: string) => void;
 }
 
+const PerformanceLine: React.FC<{ est: PerformanceEstimate | null }> = ({ est }) => (
+  <div
+    className="mt-2 text-center"
+    title={
+      est
+        ? `Estimated from average centipawn loss (${est.acpl} cp over ${est.moves} moves). A ballpark figure, not a platform rating.`
+        : "Too few moves to estimate."
+    }
+  >
+    <div className="text-[10px] uppercase tracking-wide text-slate-500">Est. performance</div>
+    {est ? (
+      <>
+        <div className="text-lg font-bold font-mono text-slate-100">~{est.rating}</div>
+        <div className="text-[10px] text-slate-500 font-mono">±{est.margin} · {est.acpl} avg cp loss</div>
+      </>
+    ) : (
+      <div className="text-sm text-slate-500 font-mono">—</div>
+    )}
+  </div>
+);
+
 export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
   report,
   selectedPly,
@@ -51,6 +73,10 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
   onOpenCoach,
   onPreviewEngineMove,
 }) => {
+  const perf = useMemo(
+    () => ({ w: estimatePerformance(report.moves, "w"), b: estimatePerformance(report.moves, "b") }),
+    [report.moves],
+  );
   const [copiedPgn, setCopiedPgn] = useState(false);
   const [copiedFen, setCopiedFen] = useState(false);
   const [customPgnInput, setCustomPgnInput] = useState("");
@@ -944,6 +970,7 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
                   style={{ width: `${report.whiteAccuracy}%` }}
                 />
               </div>
+              <PerformanceLine est={perf.w} />
             </div>
 
             <div className="flex flex-col items-center bg-[#171a24] p-2.5 rounded-lg border border-[#2b3040]">
@@ -957,6 +984,7 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
                   style={{ width: `${report.blackAccuracy}%` }}
                 />
               </div>
+              <PerformanceLine est={perf.b} />
             </div>
           </div>
 
