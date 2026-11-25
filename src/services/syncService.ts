@@ -18,6 +18,13 @@ export interface SyncSettings {
   /** Stockfish depth for background analysis. */
   analysisDepth: number;
   autoSync: boolean;
+  /**
+   * Background analysis only covers the newest N stored games (0 = none). Older
+   * unanalyzed games wait until the user chooses "Analyze remaining".
+   */
+  autoAnalyzeLimit: number;
+  /** User paused background analysis. Persisted, so it survives reloads. */
+  analysisPaused: boolean;
 }
 
 export interface SyncStatus {
@@ -41,7 +48,21 @@ const DEFAULT_SETTINGS: SyncSettings = {
   initialGames: 60,
   analysisDepth: 12,
   autoSync: true,
+  autoAnalyzeLimit: 50,
+  analysisPaused: false,
 };
+
+const isPending = (g: GameRecord) => !g.analysis && !g.analysisError;
+
+/**
+ * Which games to analyze next. `games` must be newest-first. By default only games
+ * within the newest `limit` are considered, so a large old backlog doesn't start
+ * crunching on its own; `all` includes every unanalyzed game.
+ */
+export function selectAnalysisQueue(games: GameRecord[], opts: { all: boolean; limit: number }): GameRecord[] {
+  if (opts.all) return games.filter(isPending);
+  return games.slice(0, Math.max(0, opts.limit)).filter(isPending);
+}
 
 function readJson<T>(key: string, fallback: T): T {
   try {
@@ -157,40 +178,78 @@ class SyncService {
   }
 
   private analyzing = false;
+  private rerunAll = false;
 
-  /** Analyze every stored game that has no analysis yet, newest first. */
-  async analyzePending(): Promise<void> {
-    if (this.analyzing) return;
+  /** Pause background analysis (finishes the game in progress). Persists across reloads. */
+  pauseAnalysis() {
+    this.saveSettings({ analysisPaused: true });
+    if (this.analyzing) this.set({ message: "Pausing after the current game…" });
+  }
+
+  /** Resume background analysis of the newest games. */
+  resumeAnalysis() {
+    this.saveSettings({ analysisPaused: false });
+    void this.analyzePending();
+  }
+
+  /** Analyze every stored game that still has no analysis, including older ones. */
+  analyzeRemaining() {
+    this.saveSettings({ analysisPaused: false });
+    void this.analyzePending({ all: true });
+  }
+
+  /**
+   * Analyze stored games that have no analysis yet, newest first. Unless `all` is
+   * set, only the newest `autoAnalyzeLimit` games are considered.
+   */
+  async analyzePending(opts: { all?: boolean } = {}): Promise<void> {
+    if (this.analyzing) {
+      if (opts.all) this.rerunAll = true; // pick up the full backlog once this run ends
+      return;
+    }
     this.analyzing = true;
     try {
-      const pending = (await gameStore.all()).filter((g) => !g.analysis && !g.analysisError);
-      if (!pending.length) {
-        this.set({ phase: "idle", analyzeDone: 0, analyzeTotal: 0 });
-        return;
-      }
-      this.set({ phase: "analyzing", analyzeDone: 0, analyzeTotal: pending.length });
-      for (let i = 0; i < pending.length; i++) {
-        const g = pending[i];
-        this.set({
-          message: `Analyzing game ${i + 1} of ${pending.length} with Stockfish…`,
-          analyzeDone: i,
-        });
-        try {
-          const report = await analyzeGame(g.pgn, { depth: this.settings.analysisDepth, priority: "low" });
-          await gameStore.put({ ...g, analysis: report, analysisError: null });
-        } catch (e) {
-          if (e instanceof EngineUnavailableError) {
-            this.set({ phase: "error", message: e.message });
-            return;
-          }
-          if (e instanceof EngineCancelled) return;
-          await gameStore.put({ ...g, analysisError: (e as Error).message || "Could not analyze game" });
-        }
-      }
-      this.set({ phase: "idle", analyzeDone: pending.length, message: `Analysis complete.` });
+      await this.runAnalysis(opts.all ?? false);
     } finally {
       this.analyzing = false;
     }
+    if (this.rerunAll) {
+      this.rerunAll = false;
+      await this.analyzePending({ all: true });
+    }
+  }
+
+  private async runAnalysis(all: boolean): Promise<void> {
+    if (this.settings.analysisPaused) {
+      this.set({ phase: "idle", message: "Analysis paused." });
+      return;
+    }
+    const queue = selectAnalysisQueue(await gameStore.all(), { all, limit: this.settings.autoAnalyzeLimit });
+    if (!queue.length) {
+      this.set({ phase: "idle", analyzeDone: 0, analyzeTotal: 0 });
+      return;
+    }
+    this.set({ phase: "analyzing", analyzeDone: 0, analyzeTotal: queue.length });
+    for (let i = 0; i < queue.length; i++) {
+      if (this.settings.analysisPaused) {
+        this.set({ phase: "idle", analyzeDone: i, message: "Analysis paused." });
+        return;
+      }
+      const g = queue[i];
+      this.set({ message: `Analyzing game ${i + 1} of ${queue.length}…`, analyzeDone: i });
+      try {
+        const report = await analyzeGame(g.pgn, { depth: this.settings.analysisDepth, priority: "low" });
+        await gameStore.put({ ...g, analysis: report, analysisError: null });
+      } catch (e) {
+        if (e instanceof EngineUnavailableError) {
+          this.set({ phase: "error", message: e.message });
+          return;
+        }
+        if (e instanceof EngineCancelled) return;
+        await gameStore.put({ ...g, analysisError: (e as Error).message || "Could not analyze game" });
+      }
+    }
+    this.set({ phase: "idle", analyzeDone: queue.length, message: "Analysis complete." });
   }
 
   /** Re-queue analysis for a game (e.g. after an error). */

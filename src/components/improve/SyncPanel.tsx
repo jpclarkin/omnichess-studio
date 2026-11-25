@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { RefreshCw, Settings2, Loader2, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { RefreshCw, Settings2, Loader2, AlertTriangle, CheckCircle2, Pause, Play } from "lucide-react";
 import { syncService } from "../../services/syncService";
 import { useSyncStatus } from "./hooks";
 
@@ -12,17 +12,35 @@ function timeAgo(t: number | null): string {
   return h < 24 ? `${h} h ago` : `${Math.round(h / 24)} d ago`;
 }
 
-export function SyncPanel({ gameCount }: { gameCount: number }) {
+export function SyncPanel({
+  gameCount,
+  analyzedCount,
+  pendingCount,
+}: {
+  gameCount: number;
+  /** Stored games that already have a Stockfish analysis. */
+  analyzedCount: number;
+  /** Stored games still waiting for analysis (excluding ones that failed). */
+  pendingCount: number;
+}) {
   const status = useSyncStatus();
   const [editing, setEditing] = useState(!syncService.hasAccounts());
   const [form, setForm] = useState(() => syncService.getSettings());
 
   const busy = status.phase === "fetching" || status.phase === "analyzing";
+  const analyzing = status.phase === "analyzing";
+  const paused = syncService.getSettings().analysisPaused;
+  const smallBtn =
+    "px-2.5 py-1 bg-[#212634] hover:bg-[#2b3245] text-slate-200 text-[11px] font-semibold rounded-lg border border-[#30384c] flex items-center gap-1.5 cursor-pointer";
 
   const save = (e: React.FormEvent) => {
     e.preventDefault();
+    // Not `...form`: it holds a stale copy of the pause flag.
     syncService.saveSettings({
-      ...form,
+      initialGames: form.initialGames,
+      analysisDepth: form.analysisDepth,
+      autoSync: form.autoSync,
+      autoAnalyzeLimit: form.autoAnalyzeLimit,
       chesscomUsername: form.chesscomUsername.trim(),
       lichessUsername: form.lichessUsername.trim(),
       lichessToken: form.lichessToken.trim(),
@@ -79,12 +97,41 @@ export function SyncPanel({ gameCount }: { gameCount: number }) {
           ) : (
             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
           )}
-          <span className={status.phase === "error" ? "text-amber-300" : "text-slate-300"}>{status.message}</span>
+          <span className={status.phase === "error" ? "text-amber-300" : "text-slate-300"}>
+            {analyzing
+              ? `Analyzing game ${Math.min(status.analyzeDone + 1, status.analyzeTotal)} of ${status.analyzeTotal} queued · ${analyzedCount} of ${gameCount} stored games analyzed`
+              : status.message}
+          </span>
+          {analyzing && (
+            <button onClick={() => syncService.pauseAnalysis()} className={`${smallBtn} ml-auto`}>
+              <Pause className="w-3 h-3" /> Pause
+            </button>
+          )}
         </div>
       )}
-      {status.phase === "analyzing" && status.analyzeTotal > 0 && (
+      {analyzing && status.analyzeTotal > 0 && (
         <div className="mt-2 w-full bg-[#202534] h-1.5 rounded-full overflow-hidden">
           <div className="bg-emerald-500 h-full transition-all" style={{ width: `${(status.analyzeDone / status.analyzeTotal) * 100}%` }} />
+        </div>
+      )}
+      {!analyzing && syncService.hasAccounts() && (paused || pendingCount > 0) && (
+        <div className="mt-2 text-xs flex flex-wrap items-center gap-2 text-slate-400">
+          <span>
+            {paused ? "Analysis is paused. " : ""}
+            {pendingCount > 0
+              ? `${pendingCount} stored game${pendingCount === 1 ? " isn't" : "s aren't"} analyzed yet (${analyzedCount} of ${gameCount} done).`
+              : "Nothing waiting."}
+          </span>
+          {paused && (
+            <button onClick={() => syncService.resumeAnalysis()} className={smallBtn}>
+              <Play className="w-3 h-3" /> Resume
+            </button>
+          )}
+          {pendingCount > 0 && (
+            <button onClick={() => syncService.analyzeRemaining()} className={smallBtn}>
+              Analyze remaining {pendingCount}
+            </button>
+          )}
         </div>
       )}
 
@@ -116,6 +163,13 @@ export function SyncPanel({ gameCount }: { gameCount: number }) {
             <input type="password" className={input} value={form.lichessToken} onChange={(e) => setForm({ ...form, lichessToken: e.target.value })} placeholder="lip_…" />
             <span className="block mt-1 text-[11px] text-slate-500">
               Create one with no scopes at lichess.org/account/oauth/token. It's stored only in this browser.
+            </span>
+          </label>
+          <label className="text-xs text-slate-400 md:col-span-2">
+            Analyze automatically: newest N games (0 = only when I ask)
+            <input type="number" min={0} max={2000} className={input} value={form.autoAnalyzeLimit} onChange={(e) => setForm({ ...form, autoAnalyzeLimit: Math.max(0, Number(e.target.value) || 0) })} />
+            <span className="block mt-1 text-[11px] text-slate-500">
+              Older games stay unanalyzed until you press “Analyze remaining”. Insights use whatever is analyzed so far.
             </span>
           </label>
           <label className="text-xs text-slate-300 flex items-center gap-2 md:col-span-2">
