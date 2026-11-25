@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { Chess, type Square } from "chess.js";
 import confetti from "canvas-confetti";
 import { Chessboard } from "./Chessboard";
-import { puzzleService, type PuzzleStats } from "../services/puzzleService";
+import { puzzleService, ENRICHED_PUZZLE_DATABASE, type PuzzleStats, type PuzzleSource } from "../services/puzzleService";
+import { PUZZLE_THEMES } from "../data/puzzleThemes";
 import { soundManager } from "../audio/soundManager";
 import type { TacticalPuzzle, BoardTheme } from "../types/chess";
 import {
@@ -18,6 +19,7 @@ import {
   ExternalLink,
   BookOpen,
   Filter,
+  Wand2,
 } from "lucide-react";
 
 interface PuzzlesViewProps {
@@ -26,33 +28,29 @@ interface PuzzlesViewProps {
 
 type PuzzleMode = "daily" | "ranked" | "themes";
 
-const THEMES = [
-  "All Themes",
-  "Fork",
-  "Pin",
-  "Skewer",
-  "Back-Rank Mate",
-  "Mate in 1",
-  "Smothered Mate",
-  "Discovered Attack",
-  "Deflection",
-  "Sacrifice",
-  "Endgame",
-];
 
 export const PuzzlesView: React.FC<PuzzlesViewProps> = ({ theme }) => {
   const [mode, setMode] = useState<PuzzleMode>("daily");
   const [selectedTheme, setSelectedTheme] = useState<string>("All Themes");
   const [difficultyTier, setDifficultyTier] = useState<"novice" | "intermediate" | "advanced" | "master" | "all">("all");
 
-  const [puzzleList, setPuzzleList] = useState<TacticalPuzzle[]>([]);
-  const [puzzleIndex, setPuzzleIndex] = useState(0);
+  const [puzzleSource, setPuzzleSource] = useState<PuzzleSource | null>(null);
+  const [isLoadingNext, setIsLoadingNext] = useState(false);
+  const requestId = useRef(0);
   const [currentPuzzle, setCurrentPuzzle] = useState<TacticalPuzzle | null>(null);
   const [game, setGame] = useState<Chess>(new Chess());
   const [moveStep, setMoveStep] = useState(0);
   const [isSolved, setIsSolved] = useState(false);
   const [isFailed, setIsFailed] = useState(false);
   const [showHint, setShowHint] = useState(false);
+  // True once the user asked for the solution. No rating change is recorded.
+  const [isRevealed, setIsRevealed] = useState(false);
+  const timers = useRef<number[]>([]);
+  const clearTimers = () => {
+    timers.current.forEach((t) => window.clearTimeout(t));
+    timers.current = [];
+  };
+  useEffect(() => clearTimers, []);
   const [lastMove, setLastMove] = useState<{ from: string; to: string } | null>(null);
   const [isLoadingDaily, setIsLoadingDaily] = useState(false);
   const [stats, setStats] = useState<PuzzleStats>(() => puzzleService.getStats());
@@ -70,47 +68,55 @@ export const PuzzlesView: React.FC<PuzzlesViewProps> = ({ theme }) => {
     setIsSolved(false);
     setIsFailed(false);
     setShowHint(false);
+    setIsRevealed(false);
+    clearTimers();
     setLastMove(null);
   };
 
-  // Load puzzles depending on selected mode
+  /** Fetch the next puzzle for the current filters (live from Lichess, else the offline bank). */
+  const loadNext = async () => {
+    const id = ++requestId.current;
+    setIsLoadingNext(true);
+    const { puzzle, source } = await puzzleService.getNextPuzzle({
+      tier: mode === "ranked" ? difficultyTier : "all",
+      theme: mode === "themes" ? selectedTheme : "All Themes",
+    });
+    if (id !== requestId.current) return; // a newer request superseded this one
+    setPuzzleSource(source);
+    setupBoard(puzzle);
+    setIsLoadingNext(false);
+  };
+
+  // Load a puzzle whenever the mode or its filters change
   useEffect(() => {
     let isCancelled = false;
 
-    async function loadPuzzlesForMode() {
+    async function loadForMode() {
       if (mode === "daily") {
+        const id = ++requestId.current;
+        setIsLoadingNext(false);
         setIsLoadingDaily(true);
         const daily = await puzzleService.fetchDailyPuzzle();
-        if (!isCancelled && daily) {
-          setPuzzleList([daily]);
-          setPuzzleIndex(0);
+        if (!isCancelled && id === requestId.current && daily) {
+          setPuzzleSource(daily === ENRICHED_PUZZLE_DATABASE[0] ? "offline" : "live");
           setupBoard(daily);
         }
         setIsLoadingDaily(false);
-      } else if (mode === "ranked") {
-        const list = puzzleService.getPuzzlesByTier(difficultyTier);
-        setPuzzleList(list);
-        setPuzzleIndex(0);
-        if (list[0]) setupBoard(list[0]);
-      } else if (mode === "themes") {
-        const list =
-          selectedTheme === "All Themes"
-            ? puzzleService.getPuzzlesByTier("all")
-            : puzzleService.getPuzzlesByTheme(selectedTheme);
-        setPuzzleList(list);
-        setPuzzleIndex(0);
-        if (list[0]) setupBoard(list[0]);
+      } else {
+        await loadNext();
       }
     }
 
-    loadPuzzlesForMode();
+    loadForMode();
     return () => {
       isCancelled = true;
+      requestId.current++;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, difficultyTier, selectedTheme]);
 
   const handlePlayerMove = ({ from, to, promotion }: { from: string; to: string; promotion?: string }) => {
-    if (!currentPuzzle || isSolved || isFailed) return;
+    if (!currentPuzzle || isSolved || isFailed || isRevealed) return;
 
     const gameCopy = new Chess(game.fen());
     let moveObj = null;
@@ -128,7 +134,11 @@ export const PuzzlesView: React.FC<PuzzlesViewProps> = ({ theme }) => {
 
     const expectedMoveSan = currentPuzzle.moves[moveStep];
 
-    if (moveObj.san === expectedMoveSan) {
+    // Any checkmating move is as good as the listed one (puzzles often have several mates).
+    const isExpected =
+      moveObj.san === expectedMoveSan || (expectedMoveSan.endsWith("#") && moveObj.san.endsWith("#"));
+
+    if (isExpected) {
       if (moveObj.captured) soundManager.playCapture();
       else soundManager.playMove();
 
@@ -152,7 +162,7 @@ export const PuzzlesView: React.FC<PuzzlesViewProps> = ({ theme }) => {
         });
       } else {
         // Automatic opponent counter-move
-        setTimeout(() => {
+        timers.current.push(window.setTimeout(() => {
           const opponentMoveSan = currentPuzzle.moves[nextStep];
           const oppGame = new Chess(gameCopy.fen());
           try {
@@ -166,7 +176,7 @@ export const PuzzlesView: React.FC<PuzzlesViewProps> = ({ theme }) => {
               setMoveStep(nextStep + 1);
             }
           } catch {}
-        }, 400);
+        }, 400));
       }
     } else {
       soundManager.playBlunder();
@@ -176,11 +186,40 @@ export const PuzzlesView: React.FC<PuzzlesViewProps> = ({ theme }) => {
     }
   };
 
+  /** Plays out the rest of the solution on the board. Not counted as a solve and doesn't change the rating. */
+  const handleSolveForMe = () => {
+    if (!currentPuzzle || isSolved || isRevealed) return;
+    clearTimers();
+    setIsRevealed(true);
+    setIsFailed(false);
+    setShowHint(false);
+
+    const g = new Chess(game.fen());
+    const startStep = moveStep;
+    currentPuzzle.moves.slice(startStep).forEach((san, i) => {
+      timers.current.push(
+        window.setTimeout(() => {
+          let m;
+          try {
+            m = g.move(san);
+          } catch {
+            return;
+          }
+          if (!m) return;
+          if (m.captured) soundManager.playCapture();
+          else soundManager.playMove();
+          setGame(new Chess(g.fen()));
+          setLastMove({ from: m.from, to: m.to });
+          setMoveStep(startStep + i + 1);
+        }, 350 + i * 800),
+      );
+    });
+  };
+
   const handleNextPuzzle = () => {
-    if (puzzleList.length === 0) return;
-    const nextIdx = (puzzleIndex + 1) % puzzleList.length;
-    setPuzzleIndex(nextIdx);
-    setupBoard(puzzleList[nextIdx]);
+    if (isLoadingNext) return;
+    clearTimers();
+    void loadNext();
   };
 
   const handleRetry = () => {
@@ -205,7 +244,7 @@ export const PuzzlesView: React.FC<PuzzlesViewProps> = ({ theme }) => {
           isFlipped={currentPuzzle.turn === "b"}
           theme={theme}
           lastMove={lastMove}
-          interactive={!isSolved}
+          interactive={!isSolved && !isRevealed}
         />
       </div>
 
@@ -284,7 +323,7 @@ export const PuzzlesView: React.FC<PuzzlesViewProps> = ({ theme }) => {
 
         {mode === "themes" && (
           <div className="flex flex-wrap items-center gap-1 bg-[#12141c] p-2 rounded-xl border border-[#262c3d] text-xs max-h-24 overflow-y-auto">
-            {THEMES.map((th) => (
+            {PUZZLE_THEMES.map((th) => (
               <button
                 key={th}
                 onClick={() => setSelectedTheme(th)}
@@ -351,6 +390,9 @@ export const PuzzlesView: React.FC<PuzzlesViewProps> = ({ theme }) => {
               </span>
               <span className="text-xs text-slate-300 font-semibold">
                 {currentPuzzle.turn === "w" ? "White to move" : "Black to move"}
+                <span className="ml-2 font-mono text-[10px] text-slate-500" title="Where this puzzle came from">
+                  {currentPuzzle.rating} · {puzzleSource === "live" ? "Lichess live" : "offline bank"}
+                </span>
               </span>
             </div>
             <h4 className="text-white font-semibold text-xs mb-1">{currentPuzzle.title}</h4>
@@ -366,6 +408,16 @@ export const PuzzlesView: React.FC<PuzzlesViewProps> = ({ theme }) => {
                 <p className="text-[11px] text-emerald-400/80 mt-0.5">
                   Optimal sequence executed with master foresight. Calculation accuracy confirmed.
                 </p>
+              </div>
+            </div>
+          )}
+
+          {isRevealed && (
+            <div className="bg-[#11131a] border border-[#2f3547] p-3 rounded-lg flex items-start gap-2.5 mb-3 animate-in fade-in">
+              <Wand2 className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              <div>
+                <div className="text-slate-200 font-semibold text-xs">Solution shown (no rating change)</div>
+                <p className="text-[11px] text-slate-400 mt-0.5 font-mono">{currentPuzzle.moves.join(" ")}</p>
               </div>
             </div>
           )}
@@ -395,7 +447,18 @@ export const PuzzlesView: React.FC<PuzzlesViewProps> = ({ theme }) => {
 
           {/* Actions */}
           <div className="flex gap-2">
-            {!showHint && !isSolved && (
+            {!isSolved && !isRevealed && (
+              <button
+                onClick={handleSolveForMe}
+                title="Play out the solution for me (no rating change)"
+                className="flex-1 py-1.5 px-3 bg-[#222736] hover:bg-[#2c3245] text-slate-300 hover:text-white text-xs font-medium rounded-lg border border-[#333a4d] flex items-center justify-center gap-1.5 transition cursor-pointer"
+              >
+                <Wand2 className="w-3.5 h-3.5 text-amber-400" />
+                <span>Solve for me</span>
+              </button>
+            )}
+
+            {!showHint && !isSolved && !isRevealed && (
               <button
                 onClick={() => setShowHint(true)}
                 className="flex-1 py-1.5 px-3 bg-[#222736] hover:bg-[#2c3245] text-slate-300 hover:text-white text-xs font-medium rounded-lg border border-[#333a4d] flex items-center justify-center gap-1.5 transition cursor-pointer"
@@ -405,7 +468,7 @@ export const PuzzlesView: React.FC<PuzzlesViewProps> = ({ theme }) => {
               </button>
             )}
 
-            {(isSolved || isFailed) && (
+            {(isSolved || isFailed || isRevealed) && (
               <button
                 onClick={handleRetry}
                 className="flex-1 py-1.5 px-3 bg-[#222736] hover:bg-[#2c3245] text-slate-300 hover:text-white text-xs font-medium rounded-lg border border-[#333a4d] flex items-center justify-center gap-1.5 transition cursor-pointer"
@@ -417,9 +480,10 @@ export const PuzzlesView: React.FC<PuzzlesViewProps> = ({ theme }) => {
 
             <button
               onClick={handleNextPuzzle}
-              className="flex-1 py-1.5 px-3 bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-semibold rounded-lg shadow flex items-center justify-center gap-1.5 transition cursor-pointer"
+              disabled={isLoadingNext}
+              className="flex-1 py-1.5 px-3 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60 disabled:cursor-wait text-white text-xs font-semibold rounded-lg shadow flex items-center justify-center gap-1.5 transition cursor-pointer"
             >
-              <span>Next Puzzle</span>
+              <span>{isLoadingNext ? "Loading…" : "Next Puzzle"}</span>
               <ChevronRight className="w-3.5 h-3.5" />
             </button>
           </div>
