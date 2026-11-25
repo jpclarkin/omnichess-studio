@@ -121,7 +121,20 @@ function materialAfter(fen: string, uci: string[], plies: number, color: "w" | "
   return sideSign(color) * materialBalance(fens.length ? fens[fens.length - 1] : fen);
 }
 
+// Classifying replays positions with chess.js, which is slow; a move's classification
+// never changes, so remember it per move object (unchanged games keep their objects).
+const mistakeTypeCache = new WeakMap<AnalyzedMove, MistakeType>();
+
 export function classifyMistake(m: AnalyzedMove): MistakeType {
+  let type = mistakeTypeCache.get(m);
+  if (!type) {
+    type = classifyMistakeUncached(m);
+    mistakeTypeCache.set(m, type);
+  }
+  return type;
+}
+
+function classifyMistakeUncached(m: AnalyzedMove): MistakeType {
   const s = sideSign(m.color);
   const before = m.scoreBefore;
   const after = m.scoreAfter;
