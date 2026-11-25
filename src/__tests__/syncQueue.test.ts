@@ -23,3 +23,20 @@ describe("selectAnalysisQueue", () => {
     expect(selectAnalysisQueue(games, { all: false, limit: 999 })).toHaveLength(4);
   });
 });
+
+import { defaultAnalysisWorkers, estimateSecondsLeft } from "../services/syncService";
+
+describe("analysis speed helpers", () => {
+  it("uses half the cores, between 1 and 4", () => {
+    expect(defaultAnalysisWorkers(1)).toBe(1);
+    expect(defaultAnalysisWorkers(4)).toBe(2);
+    expect(defaultAnalysisWorkers(8)).toBe(4);
+    expect(defaultAnalysisWorkers(32)).toBe(4);
+  });
+  it("estimates time left from the pace so far, and stays quiet until it has data", () => {
+    const start = 1_000_000;
+    expect(estimateSecondsLeft(2, 100, start, start + 20_000)).toBeNull();
+    expect(estimateSecondsLeft(10, 110, start, start + 50_000)).toBe(500); // 5 s/game, 100 left
+    expect(estimateSecondsLeft(100, 100, start, start + 50_000)).toBeNull();
+  });
+});

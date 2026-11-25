@@ -7,7 +7,7 @@
  */
 import { Chess, type Move } from "chess.js";
 import type { AnalyzedMove, EngineCandidateLine, GameAnalysisReport, MoveGrade } from "../types/chess";
-import { stockfishService, uciLineFens, type SearchResult } from "./stockfishService";
+import { stockfishService, uciLineFens, type SearchResult, type StockfishService } from "./stockfishService";
 import { gamePhase, gradeMove, materialBalance, parseClock, type Score } from "./grading";
 import { generateCoachExplanation } from "./commentaryEngine";
 
@@ -21,6 +21,8 @@ export class EngineUnavailableError extends Error {
 export interface AnalyzeOptions {
   depth?: number;
   priority?: "high" | "low";
+  /** Engine to use (default: the shared one). Background sync passes its own pool engines. */
+  engine?: StockfishService;
   onProgress?: (percent: number, done: number, total: number) => void;
   /** Return true to abort (e.g. user navigated away). */
   isCancelled?: () => boolean;
@@ -76,6 +78,7 @@ const emptyCounts = (): Record<MoveGrade, number> => ({
 });
 
 export async function analyzeGame(pgnOrSans: string | string[], opts: AnalyzeOptions = {}): Promise<GameAnalysisReport> {
+  const engine = opts.engine ?? stockfishService;
   const depth = opts.depth ?? 12;
   const { moves, clocks } = parseGame(pgnOrSans);
 
@@ -92,7 +95,7 @@ export async function analyzeGame(pgnOrSans: string | string[], opts: AnalyzeOpt
       results.push({ fen, bestMoveUci: "", bestMoveSan: "", lines: [], depth, source: "stockfish" });
       scores.push(terminal);
     } else {
-      const res = await stockfishService.analyze(fen, { depth, multipv: 2 }, { priority: opts.priority ?? "high" });
+      const res = await engine.analyze(fen, { depth, multipv: 2 }, { priority: opts.priority ?? "high" });
       if (res.source !== "stockfish" || !res.lines[0]) throw new EngineUnavailableError();
       results.push(res);
       scores.push(res.lines[0].score);
@@ -199,7 +202,7 @@ export async function analyzeGame(pgnOrSans: string | string[], opts: AnalyzeOpt
     gradeCounts,
     coachOverview,
     blunderPuzzles: analyzed.filter((m) => m.grade === "blunder" || m.grade === "missed_win"),
-    engineName: stockfishService.getEngineName(),
+    engineName: engine.getEngineName(),
     depth,
   };
 }

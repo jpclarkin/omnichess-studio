@@ -58,7 +58,18 @@ export class EngineCancelled extends Error {
 const WORKER_URL = "/stockfish/stockfish.js";
 const INIT_TIMEOUT_MS = 15000;
 
-class StockfishService {
+export interface EngineConfig {
+  /** UCI Hash size in MB, applied once the engine is ready. */
+  hashMb?: number;
+}
+
+export class StockfishService {
+  private readonly config: EngineConfig;
+
+  constructor(config: EngineConfig = {}) {
+    this.config = config;
+  }
+
   private worker: Worker | null = null;
   private initPromise: Promise<boolean> | null = null;
   private ready = false;
@@ -130,6 +141,7 @@ class StockfishService {
         } else if (line === "readyok" && !this.ready) {
           clearTimeout(timeout);
           this.ready = true;
+          if (this.config.hashMb) this.setOption("Hash", String(this.config.hashMb));
           this.emitStatus();
           resolve(true);
           this.pump();
@@ -343,4 +355,5 @@ export function uciLineFens(fen: string, uci: string[]): string[] {
   return out;
 }
 
-export const stockfishService = new StockfishService();
+/** The engine used for play, live evaluation and on-screen reviews. */
+export const stockfishService = new StockfishService({ hashMb: 64 });
