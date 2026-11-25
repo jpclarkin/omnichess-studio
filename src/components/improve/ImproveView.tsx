@@ -76,7 +76,11 @@ export function ImproveView({ theme, onOpenGame }: Props) {
 
   return (
     <div className="flex flex-col gap-5">
-      <SyncPanel gameCount={games.length} />
+      <SyncPanel
+        gameCount={games.length}
+        analyzedCount={games.filter((g) => g.analysis).length}
+        pendingCount={games.filter((g) => !g.analysis && !g.analysisError).length}
+      />
 
       <div className="flex gap-1 bg-[#11131a] border border-[#232733] rounded-xl p-1 w-fit">
         {tabs.map((t) => (
