@@ -107,7 +107,7 @@ export interface GameAnalysisReport {
   };
   coachOverview: string;
   blunderPuzzles: AnalyzedMove[];
-  /** Engine that produced the report, e.g. "Stockfish 18 Lite WASM". */
+  /** Engine that produced the report, e.g. "Stockfish 19 Lite WASM". */
   engineName?: string;
   depth?: number;
 }

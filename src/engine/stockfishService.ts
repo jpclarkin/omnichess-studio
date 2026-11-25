@@ -73,7 +73,7 @@ class StockfishService {
   private lineHandler: ((line: string) => void) | null = null;
   private statusListeners = new Set<() => void>();
 
-  /** Human-readable engine id reported by the worker, e.g. "Stockfish 18 Lite WASM". */
+  /** Human-readable engine id reported by the worker, e.g. "Stockfish 19 Lite WASM". */
   getEngineName(): string {
     return this.engineName;
   }

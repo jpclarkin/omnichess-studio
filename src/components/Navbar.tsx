@@ -10,7 +10,7 @@ interface NavbarProps {
   isMuted: boolean;
   onToggleMute: () => void;
   onOpenCoach?: () => void;
-  /** e.g. "Stockfish 18 Lite WASM", or null while loading / unavailable. */
+  /** e.g. "Stockfish 19 Lite WASM", or null while loading / unavailable. */
   engineLabel: string | null;
   engineError?: boolean;
 }

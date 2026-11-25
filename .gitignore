@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Stockfish build is copied from node_modules/stockfish by scripts/sync-engine.mjs
+public/stockfish/
