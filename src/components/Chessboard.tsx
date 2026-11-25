@@ -335,7 +335,7 @@ export const Chessboard: React.FC<ChessboardProps> = ({
   };
 
   return (
-    <div className="relative select-none w-full max-w-[620px] aspect-square shadow-2xl rounded-lg overflow-hidden border-4 border-[#2d3342]">
+    <div className="relative select-none w-full max-w-[var(--board-size)] aspect-square shadow-2xl rounded-lg overflow-hidden border-4 border-[#2d3342]">
       {/* 8x8 Board Container */}
       <div
         ref={boardRef}
