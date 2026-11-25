@@ -70,13 +70,16 @@ function tx<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T
   );
 }
 
-const listeners = new Set<() => void>();
-export function onGamesChanged(fn: () => void): () => void {
+/** What changed: specific games (re-read just those), or everything. */
+export type GamesChange = { ids: string[] } | { all: true };
+
+const listeners = new Set<(change: GamesChange) => void>();
+export function onGamesChanged(fn: (change: GamesChange) => void): () => void {
   listeners.add(fn);
   return () => listeners.delete(fn);
 }
-function emit() {
-  listeners.forEach((fn) => fn());
+function emit(change: GamesChange) {
+  listeners.forEach((fn) => fn(change));
 }
 
 export const gameStore = {
@@ -93,21 +96,21 @@ export const gameStore = {
   },
   async put(game: GameRecord): Promise<void> {
     await tx("readwrite", (s) => s.put(game));
-    emit();
+    emit({ ids: [game.id] });
   },
   async putMany(games: GameRecord[]): Promise<void> {
     if (!games.length) return;
     await tx("readwrite", (s) => {
       games.forEach((g) => s.put(g));
     });
-    emit();
+    emit({ ids: games.map((g) => g.id) });
   },
   async remove(id: string): Promise<void> {
     await tx("readwrite", (s) => s.delete(id));
-    emit();
+    emit({ ids: [id] });
   },
   async clear(): Promise<void> {
     await tx("readwrite", (s) => s.clear());
-    emit();
+    emit({ all: true });
   },
 };
