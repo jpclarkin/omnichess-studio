@@ -1,0 +1,14 @@
+version: 2
+updates:
+  # Keep the bundled Stockfish engine current. Each PR runs the full CI, which
+  # includes the engine smoke test and puzzle verification.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    allow:
+      - dependency-name: stockfish
+    commit-message:
+      prefix: "chore(engine)"
+    labels:
+      - engine-upgrade

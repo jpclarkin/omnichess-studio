@@ -21,7 +21,7 @@ Built with React 19, TypeScript, Vite and Tailwind CSS v4. Everything runs in th
 
 ## Engine
 
-The bundled engine is **Stockfish 18 Lite** (single-threaded WASM build from [stockfish.js](https://github.com/nmrugg/stockfish.js)), in `public/stockfish/`. It runs in a Web Worker behind a priority queue: live evaluation, bot moves and on-screen reviews jump ahead of background analysis. Searches that run long are stopped with `stop`, and if Stockfish can't start, the app says so instead of substituting a weaker engine.
+The engine is **Stockfish** (the single-threaded "lite" WASM build from the [`stockfish`](https://www.npmjs.com/package/stockfish) npm package, see [stockfish.js](https://github.com/nmrugg/stockfish.js)). `npm install` copies it to `public/stockfish/` (`scripts/sync-engine.mjs`; the copy is git-ignored), and Dependabot opens a PR whenever a new version is released. CI re-checks every upgrade: `npm run smoke:engine` (starts the engine, checks the UCI options and bot Elo range, MultiPV and mate detection) and `npm run validate:puzzles` (verifies every curated puzzle). It runs in a Web Worker behind a priority queue: live evaluation, bot moves and on-screen reviews jump ahead of background analysis. Searches that run long are stopped with `stop`, and if Stockfish can't start, the app says so instead of substituting a weaker engine.
 
 ## Data and privacy
 
