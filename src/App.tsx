@@ -535,8 +535,8 @@ export function App() {
           </div>
         )}
 
-        {/* Game Terminated Notice */}
-        {gameOverReason && (
+        {/* Game Terminated Notice: only where the finished game's board is on screen */}
+        {gameOverReason && (mode === "vs-computer" || mode === "pass-play" || mode === "analysis") && (
           <div className="mb-4 bg-[#151822] border border-[#2b3142] p-4 rounded-xl shadow-lg flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 rounded-lg bg-[#212634] border border-[#30384c] flex items-center justify-center">
