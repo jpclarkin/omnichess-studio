@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, lazy, Suspense } from "react"
 import { Chess, type Square } from "chess.js";
 import { Chessboard } from "./components/Chessboard";
 import { EvaluationBar } from "./components/EvaluationBar";
+import { MaterialBar } from "./components/MaterialBar";
 import { MoveHistory, type MoveHistoryItem } from "./components/MoveHistory";
 import { GameControls } from "./components/GameControls";
 import { AnalysisPanel } from "./components/AnalysisPanel";
@@ -21,7 +22,7 @@ import { loadPlan } from "./services/coachPlan";
 import { detectOpening } from "./data/openings";
 import { BOT_PROFILES, TIME_CONTROLS } from "./data/bots";
 import type { GameMode, BoardTheme, BotProfile, TimeControl, GameAnalysisReport, AnalyzedMove } from "./types/chess";
-import { BarChart2, BookOpen, Flag, RefreshCw, Loader2, Bot, AlertTriangle } from "lucide-react";
+import { BarChart2, BookOpen, Flag, RefreshCw, Loader2, Bot, AlertTriangle, Eye, EyeOff } from "lucide-react";
 
 export function App() {
   const [game, setGame] = useState<Chess>(() => new Chess());
@@ -39,6 +40,12 @@ export function App() {
   const [currentPly, setCurrentPly] = useState<number>(0);
   const [lastMove, setLastMove] = useState<{ from: string; to: string } | null>(null);
   const [evalScore, setEvalScore] = useState<number>(0);
+  const [showEvalBar, setShowEvalBar] = useState<boolean>(() => localStorage.getItem("omnichess.showEvalBar") !== "false");
+  const toggleEvalBar = () =>
+    setShowEvalBar((v) => {
+      localStorage.setItem("omnichess.showEvalBar", String(!v));
+      return !v;
+    });
   const [detectedOpeningName, setDetectedOpeningName] = useState<string | null>(null);
 
   // Time & Clocks
@@ -498,7 +505,7 @@ export function App() {
       />
 
       {/* Main Container */}
-      <main className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 flex flex-col justify-start">
+      <main className="flex-1 max-w-7xl w-full mx-auto p-3 md:p-4 flex flex-col justify-start">
         {notice && (
           <div className="mb-4 bg-amber-950/40 border border-amber-700/50 p-3 rounded-xl text-xs text-amber-200 flex items-center gap-2">
             <AlertTriangle className="w-4 h-4 shrink-0" />
@@ -577,7 +584,7 @@ export function App() {
             <div className="lg:col-span-7 flex flex-col items-center">
               {/* Active Opening Banner */}
               {detectedOpeningName && (
-                <div className="w-full max-w-[620px] mb-2 flex items-center gap-2 bg-[#141620] px-3 py-1.5 rounded-lg border border-[#242836] text-xs font-medium text-slate-300 shadow-sm">
+                <div className="w-full max-w-[var(--board-size)] mb-2 flex items-center gap-2 bg-[#141620] px-3 py-1.5 rounded-lg border border-[#242836] text-xs font-medium text-slate-300 shadow-sm">
                   <BookOpen className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
                   <span className="truncate">{detectedOpeningName}</span>
                 </div>
@@ -585,12 +592,14 @@ export function App() {
 
               <div className="flex gap-2.5 md:gap-3 w-full justify-center">
                 {/* Real-time Vertical Evaluation Bar */}
-                <EvaluationBar
-                  score={evalScore}
-                  isFlipped={isFlipped}
-                  isCheckmate={game.isCheckmate()}
-                  turn={game.turn()}
-                />
+                {showEvalBar && (
+                  <EvaluationBar
+                    score={evalScore}
+                    isFlipped={isFlipped}
+                    isCheckmate={game.isCheckmate()}
+                    turn={game.turn()}
+                  />
+                )}
 
                 {/* Primary Interactive Board */}
                 <Chessboard
@@ -603,8 +612,11 @@ export function App() {
                 />
               </div>
 
+              {/* Material / captured pieces */}
+              <MaterialBar game={game} isFlipped={isFlipped} className="mt-2 w-full max-w-[var(--board-size)]" />
+
               {/* Status Bar */}
-              <div className="mt-3 w-full max-w-[620px] flex items-center justify-between text-xs text-slate-400 bg-[#11131a] px-4 py-2 rounded-lg border border-[#232733]">
+              <div className="mt-2 w-full max-w-[var(--board-size)] flex items-center justify-between text-xs text-slate-400 bg-[#11131a] px-4 py-2 rounded-lg border border-[#232733]">
                 <div className="flex items-center gap-2 font-medium">
                   <span
                     className={`w-2 h-2 rounded-full ${
@@ -617,7 +629,16 @@ export function App() {
                   </span>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={toggleEvalBar}
+                    title={showEvalBar ? "Hide evaluation bar" : "Show evaluation bar"}
+                    aria-pressed={showEvalBar}
+                    className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-white cursor-pointer transition"
+                  >
+                    {showEvalBar ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    <span>Eval bar</span>
+                  </button>
                   <span className="font-mono text-slate-400 text-[11px]">
                     Move {Math.floor(moves.length / 2) + 1}
                   </span>

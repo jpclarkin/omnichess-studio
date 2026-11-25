@@ -200,7 +200,7 @@ export const OpeningExplorer: React.FC<OpeningExplorerProps> = ({ theme }) => {
 
         {/* Move History Breadcrumbs */}
         {historyMoves.length > 0 && (
-          <div className="mt-2.5 w-full max-w-[620px] bg-[#11131a] px-3 py-1.5 rounded-lg border border-[#232733] flex items-center gap-1.5 overflow-x-auto text-xs font-mono">
+          <div className="mt-2.5 w-full max-w-[var(--board-size)] bg-[#11131a] px-3 py-1.5 rounded-lg border border-[#232733] flex items-center gap-1.5 overflow-x-auto text-xs font-mono">
             <span className="text-slate-400 font-sans text-[11px] shrink-0">Line:</span>
             {historyMoves.map((m, idx) => (
               <span key={idx} className="text-slate-300 shrink-0">
@@ -211,7 +211,7 @@ export const OpeningExplorer: React.FC<OpeningExplorerProps> = ({ theme }) => {
         )}
 
         {/* Board Utility Toolbar */}
-        <div className="mt-2 w-full max-w-[620px] flex items-center justify-between text-xs text-slate-400 bg-[#11131a] px-3.5 py-2 rounded-lg border border-[#232733]">
+        <div className="mt-2 w-full max-w-[var(--board-size)] flex items-center justify-between text-xs text-slate-400 bg-[#11131a] px-3.5 py-2 rounded-lg border border-[#232733]">
           <div className="flex items-center gap-2">
             <button
               onClick={handleUndoMove}

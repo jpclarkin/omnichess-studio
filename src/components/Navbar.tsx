@@ -44,7 +44,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
   return (
     <header className="w-full bg-[#11131a] border-b border-[#232733] sticky top-0 z-40 px-4 py-2.5">
-      <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-3">
+      <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
         {/* Brand */}
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 rounded-lg bg-[#1a1d27] border border-[#2f3547] flex items-center justify-center text-emerald-400 font-bold text-lg select-none">
@@ -62,14 +62,14 @@ export const Navbar: React.FC<NavbarProps> = ({
                 {engineError ? "Engine unavailable" : engineLabel ?? "Loading engine…"}
               </span>
             </div>
-            <p className="text-[11px] text-slate-400">
+            <p className="hidden 2xl:block text-[11px] text-slate-400">
               Play, review and improve from your own games
             </p>
           </div>
         </div>
 
         {/* Navigation Tabs */}
-        <nav className="flex items-center gap-1 bg-[#161821] p-1 rounded-lg border border-[#262a36] overflow-x-auto max-w-full">
+        <nav className="order-last xl:order-none w-full xl:w-auto flex flex-wrap items-center justify-center gap-1 bg-[#161821] p-1 rounded-lg border border-[#262a36]">
           {modes.map((m) => {
             const isActive = currentMode === m.id;
             return (
