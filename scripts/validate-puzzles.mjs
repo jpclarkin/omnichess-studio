@@ -4,6 +4,7 @@
  *  - the FEN and every move in the line are legal, and the side to move matches
  *  - each solver move is within 100cp of the engine's best
  *  - the line ends with the solver clearly better (or mating)
+ * Run in CI by .github/workflows/puzzles.yml when puzzle data changes.
  * Usage: node scripts/validate-puzzles.mjs [depth] [--bank N]   (--bank also spot-checks N random puzzles from the offline bank)
  */
 import { spawn } from "node:child_process";

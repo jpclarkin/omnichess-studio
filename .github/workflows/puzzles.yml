@@ -1,0 +1,35 @@
+name: Puzzle data
+
+# Re-verifies the curated puzzles with Stockfish whenever puzzle data or the checker changes.
+on:
+  pull_request:
+    paths:
+      - "src/data/puzzles.ts"
+      - "src/data/puzzleBank.json"
+      - "scripts/validate-puzzles.mjs"
+      - "public/stockfish/**"
+  push:
+    branches: [main]
+    paths:
+      - "src/data/puzzles.ts"
+      - "src/data/puzzleBank.json"
+      - "scripts/validate-puzzles.mjs"
+      - "public/stockfish/**"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Verify puzzles with Stockfish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Validate curated puzzles
+        run: node scripts/validate-puzzles.mjs 14
