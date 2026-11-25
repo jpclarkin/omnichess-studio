@@ -140,3 +140,41 @@ export function parseClock(comment: string | undefined): number | null {
   if (!m) return null;
   return parseInt(m[1], 10) * 3600 + parseInt(m[2], 10) * 60 + parseFloat(m[3]);
 }
+
+export interface PerformanceEstimate {
+  /** Estimated performance rating, rounded to the nearest 50. */
+  rating: number;
+  /** ± uncertainty, rounded to the nearest 50. Widens for short games. */
+  margin: number;
+  /** Average centipawn loss per move (each move's loss capped at 500). */
+  acpl: number;
+  moves: number;
+}
+
+const MAX_MOVE_LOSS_CP = 500;
+
+/**
+ * Rough performance-rating estimate for one side of a reviewed game, from average
+ * centipawn loss: rating ≈ 3100·e^(−0.01·ACPL). This is an empirical fit, not a
+ * platform rating — treat it as a ballpark. Needs a handful of moves to mean anything.
+ */
+export function estimatePerformance(
+  moves: { color: "w" | "b"; scoreBefore?: Score; scoreAfter?: Score; evalBefore: number; evalAfter: number }[],
+  color: "w" | "b",
+): PerformanceEstimate | null {
+  const losses: number[] = [];
+  for (const m of moves) {
+    if (m.color !== color) continue;
+    const clamp = (x: number) => Math.max(-CP_CEILING, Math.min(CP_CEILING, x));
+    const before = m.scoreBefore ? scoreToCp(m.scoreBefore) : clamp(m.evalBefore);
+    const after = m.scoreAfter ? scoreToCp(m.scoreAfter) : clamp(m.evalAfter);
+    const loss = color === "w" ? before - after : after - before;
+    losses.push(Math.min(MAX_MOVE_LOSS_CP, Math.max(0, loss)));
+  }
+  if (losses.length < 5) return null;
+  const acpl = losses.reduce((a, b) => a + b, 0) / losses.length;
+  const round50 = (x: number) => Math.round(x / 50) * 50;
+  const rating = Math.max(400, Math.min(2900, round50(3100 * Math.exp(-0.01 * acpl))));
+  const margin = Math.max(150, Math.min(450, round50(900 / Math.sqrt(losses.length))));
+  return { rating, margin, acpl: Math.round(acpl), moves: losses.length };
+}

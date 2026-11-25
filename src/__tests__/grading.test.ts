@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { gamePhase, gradeMove, materialBalance, moveAccuracy, parseClock, scoreToCp, winProb } from "../engine/grading";
+import { estimatePerformance, gamePhase, gradeMove, materialBalance, moveAccuracy, parseClock, scoreToCp, winProb } from "../engine/grading";
 
 const cp = (n: number) => ({ cp: n, mate: null });
 
@@ -57,5 +57,28 @@ describe("helpers", () => {
   it("parses clock comments", () => {
     expect(parseClock("[%clk 0:01:05.5]")).toBeCloseTo(65.5);
     expect(parseClock("no clock")).toBeNull();
+  });
+});
+
+describe("estimatePerformance", () => {
+  const mv = (color: "w" | "b", before: number, after: number) => ({
+    color, evalBefore: before, evalAfter: after,
+  });
+  it("returns null for very short games", () => {
+    expect(estimatePerformance([mv("w", 0, 0), mv("w", 0, 0)], "w")).toBeNull();
+  });
+  it("rates a flawless side high and a sloppy side lower", () => {
+    const clean = Array.from({ length: 20 }, () => mv("w", 20, 20));
+    const sloppy = Array.from({ length: 20 }, () => mv("w", 20, -80)); // 100cp lost each move
+    const a = estimatePerformance(clean, "w")!;
+    const b = estimatePerformance(sloppy, "w")!;
+    expect(a.rating).toBeGreaterThan(2800);
+    expect(b.rating).toBeLessThan(1300);
+    expect(b.acpl).toBe(100);
+  });
+  it("measures loss from Black's point of view and ignores the other side", () => {
+    const moves = [...Array.from({ length: 6 }, () => mv("b", -20, 80)), ...Array.from({ length: 6 }, () => mv("w", 0, 0))];
+    expect(estimatePerformance(moves, "b")!.acpl).toBe(100);
+    expect(estimatePerformance(moves, "w")!.acpl).toBe(0);
   });
 });
