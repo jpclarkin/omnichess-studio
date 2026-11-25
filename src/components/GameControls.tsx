@@ -62,7 +62,7 @@ export const GameControls: React.FC<GameControlsProps> = ({
               <span className="font-semibold text-white text-xs">{bot ? bot.name : "Player 2"}</span>
               {bot && (
                 <span className="text-[10px] font-mono font-medium bg-[#222736] text-sky-300 px-1.5 py-0.2 rounded border border-[#333a4d]">
-                  {bot.rating} Elo
+                  {bot.strengthLabel}
                 </span>
               )}
             </div>

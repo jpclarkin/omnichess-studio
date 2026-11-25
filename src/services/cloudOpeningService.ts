@@ -1,3 +1,4 @@
+import { syncService } from "./syncService";
 import { Chess, type Square } from "chess.js";
 
 export interface CloudOpeningMove {
@@ -32,17 +33,18 @@ export async function queryLiveOpening(
   fen: string,
   options?: { lichessToken?: string }
 ): Promise<CloudOpeningResponse | null> {
+  const token = options?.lichessToken ?? syncService.getSettings().lichessToken;
   const normFen = fen.split(" ").slice(0, 4).join(" ");
   if (cloudOpeningCache.has(normFen)) {
     return cloudOpeningCache.get(normFen) || null;
   }
 
   // 1. Try Lichess Masters Explorer if personal access token is provided
-  if (options?.lichessToken) {
+  if (token) {
     try {
       const lUrl = `https://explorer.lichess.org/masters?fen=${encodeURIComponent(fen)}`;
       const lRes = await fetch(lUrl, {
-        headers: { Authorization: `Bearer ${options.lichessToken}` },
+        headers: { Authorization: `Bearer ${token}` },
       });
       if (lRes.ok) {
         const lData = await lRes.json();

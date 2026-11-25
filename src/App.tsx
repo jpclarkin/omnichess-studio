@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, lazy, Suspense } from "react";
 import { Chess, type Square } from "chess.js";
 import { Chessboard } from "./components/Chessboard";
 import { EvaluationBar } from "./components/EvaluationBar";
@@ -6,24 +6,23 @@ import { MaterialBar } from "./components/MaterialBar";
 import { MoveHistory, type MoveHistoryItem } from "./components/MoveHistory";
 import { GameControls } from "./components/GameControls";
 import { AnalysisPanel } from "./components/AnalysisPanel";
-import { PuzzlesView } from "./components/PuzzlesView";
-import { OpeningExplorer } from "./components/OpeningExplorer";
-import { TrainingPlanView } from "./components/TrainingPlanView";
+// Secondary views load on demand to keep the initial bundle small.
+const PuzzlesView = lazy(() => import("./components/PuzzlesView").then((m) => ({ default: m.PuzzlesView })));
+const OpeningExplorer = lazy(() => import("./components/OpeningExplorer").then((m) => ({ default: m.OpeningExplorer })));
+const ImproveView = lazy(() => import("./components/improve/ImproveView").then((m) => ({ default: m.ImproveView })));
 import { AiCoachDrawer } from "./components/AiCoachDrawer";
 import { Navbar } from "./components/Navbar";
 import { NewGameModal } from "./components/NewGameModal";
-import { ImportGamesModal } from "./components/ImportGamesModal";
-import { PlayerProfileModal } from "./components/PlayerProfileModal";
 import { soundManager } from "./audio/soundManager";
-import { evaluateBoard, findBestMove } from "./engine/chessEngine";
-import { analyzeGame } from "./engine/analysisEngine";
-import { stockfishService } from "./engine/stockfishService";
-import { diagnosticService } from "./services/diagnosticService";
-import type { ImportedGame } from "./services/platformImportService";
+import { analyzeGame, scoreToDisplayCp } from "./engine/gameAnalysis";
+import { EngineCancelled, stockfishService } from "./engine/stockfishService";
+import { gameStore } from "./services/gameStore";
+import { syncService } from "./services/syncService";
+import { loadPlan } from "./services/coachPlan";
 import { detectOpening } from "./data/openings";
 import { BOT_PROFILES, TIME_CONTROLS } from "./data/bots";
-import type { GameMode, BoardTheme, BotProfile, TimeControl, GameAnalysisReport, AnalyzedMove, PerformancePlan } from "./types/chess";
-import { BarChart2, BookOpen, Flag, RefreshCw, Loader2, Bot, Eye, EyeOff } from "lucide-react";
+import type { GameMode, BoardTheme, BotProfile, TimeControl, GameAnalysisReport, AnalyzedMove } from "./types/chess";
+import { BarChart2, BookOpen, Flag, RefreshCw, Loader2, Bot, AlertTriangle, Eye, EyeOff } from "lucide-react";
 
 export function App() {
   const [game, setGame] = useState<Chess>(() => new Chess());
@@ -32,7 +31,7 @@ export function App() {
   const [isMuted, setIsMuted] = useState(false);
 
   // Bot & Player State
-  const [bot, setBot] = useState<BotProfile>(BOT_PROFILES[1]); // Default Intermediate (1400)
+  const [bot, setBot] = useState<BotProfile>(BOT_PROFILES[2]);
   const [playerColor, setPlayerColor] = useState<"w" | "b">("w");
   const [isFlipped, setIsFlipped] = useState(false);
 
@@ -57,10 +56,12 @@ export function App() {
 
   // Modals & Analysis
   const [isNewGameModalOpen, setIsNewGameModalOpen] = useState(false);
-  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [isAiCoachOpen, setIsAiCoachOpen] = useState(false);
-  const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
-  const [playerProfile, setPlayerProfile] = useState<PerformancePlan>(() => diagnosticService.getPerformancePlan());
+  const [engineReady, setEngineReady] = useState(stockfishService.isReady());
+  const [engineFailed, setEngineFailed] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  /** Set when Game Review shows a game from "My games" (so it isn't saved twice). */
+  const [storedGameId, setStoredGameId] = useState<string | null>(null);
   const [analysisReport, setAnalysisReport] = useState<GameAnalysisReport | null>(null);
   const [analysisPly, setAnalysisPly] = useState<number>(0);
   const [analysisProgress, setAnalysisProgress] = useState<{
@@ -73,14 +74,36 @@ export function App() {
 
   const isBotThinkingRef = useRef(false);
 
-  // Keep player profile in sync with diagnosticService (auto-migrations and calibrations)
+  // Start Stockfish, then check for new games from Chess.com / Lichess.
   useEffect(() => {
-    const current = diagnosticService.getPerformancePlan();
-    setPlayerProfile(current);
-    return diagnosticService.subscribe((updated) => {
-      setPlayerProfile(updated);
+    const off = stockfishService.onStatusChange(() => setEngineReady(stockfishService.isReady()));
+    void stockfishService.init().then((ok) => {
+      setEngineReady(ok);
+      setEngineFailed(!ok);
+      if (ok) syncService.maybeAutoSync();
     });
+    return () => {
+      off();
+    };
   }, []);
+
+  // Live evaluation bar: Stockfish on the position currently shown.
+  const fen = game.fen();
+  useEffect(() => {
+    if (!engineReady) return;
+    let alive = true;
+    stockfishService
+      .analyze(fen, { depth: 14 }, { priority: "high", key: "live-eval" })
+      .then((r) => {
+        if (alive && r.source === "stockfish" && r.lines[0]) setEvalScore(scoreToDisplayCp(r.lines[0].score));
+      })
+      .catch((e) => {
+        if (!(e instanceof EngineCancelled)) console.warn(e);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [fen, engineReady]);
 
   // Timer Tick
   useEffect(() => {
@@ -177,9 +200,6 @@ export function App() {
       setGame(gameCopy);
       setLastMove({ from: executedMove.from, to: executedMove.to });
 
-      const score = evaluateBoard(gameCopy);
-      setEvalScore(score);
-
       const ply = moves.length + 1;
       const moveNumber = Math.floor(moves.length / 2) + 1;
       const historyItem: MoveHistoryItem = {
@@ -217,37 +237,21 @@ export function App() {
     let isCancelled = false;
 
     const executeMove = async () => {
-      // If Level 4 Master bot, attempt Stockfish 19 calculation
-      if (bot.id === "engine-master") {
-        try {
-          const sfEval = await stockfishService.evaluatePosition(game.fen(), 12);
-          if (isCancelled) return;
-          if (sfEval.bestMoveUci && sfEval.bestMoveUci.length >= 4) {
-            const from = sfEval.bestMoveUci.substring(0, 2);
-            const to = sfEval.bestMoveUci.substring(2, 4);
-            const promo = sfEval.bestMoveUci.length > 4 ? (sfEval.bestMoveUci[4] as "q" | "r" | "b" | "n") : undefined;
-            isBotThinkingRef.current = false;
-            makeMove({ from, to, promotion: promo });
-            return;
-          }
-        } catch (e) {
-          console.warn("Stockfish evaluation fallback to local search:", e);
-        }
+      const res = await stockfishService
+        .analyze(
+          game.fen(),
+          { movetime: bot.engine.movetime, elo: bot.engine.elo ?? null, skill: bot.engine.skill ?? null },
+          { priority: "high", key: "bot-move" }
+        )
+        .catch(() => null);
+      if (isCancelled || !res) return;
+      isBotThinkingRef.current = false;
+      if (res.source !== "stockfish" || !res.bestMoveUci) {
+        setNotice("Stockfish isn't available in this browser, so the computer can't move. Try reloading the page.");
+        return;
       }
-
-      const delay = Math.max(250, bot.depth * 130);
-      setTimeout(() => {
-        if (isCancelled) return;
-        const best = findBestMove(game, bot.depth, bot.randomness);
-        isBotThinkingRef.current = false;
-        if (best && best.move) {
-          makeMove({
-            from: best.move.from,
-            to: best.move.to,
-            promotion: best.move.promotion,
-          });
-        }
-      }, delay);
+      const u = res.bestMoveUci;
+      makeMove({ from: u.slice(0, 2), to: u.slice(2, 4), promotion: u[4] });
     };
 
     executeMove();
@@ -259,18 +263,16 @@ export function App() {
   }, [game, mode, gameOverReason, playerColor, bot, makeMove]);
 
   // Jump to Ply in Move History
-  const handleSelectPly = (ply: number) => {
+  const handleSelectPly = (ply: number, sans: string[] = moves.map((m) => m.san)) => {
     const replayGame = new Chess();
-    const targetMoves = moves.slice(0, ply);
-    for (const m of targetMoves) {
+    const targetMoves = sans.slice(0, ply);
+    for (const san of targetMoves) {
       try {
-        replayGame.move(m.san);
+        replayGame.move(san);
       } catch {}
     }
     setGame(replayGame);
     setCurrentPly(ply);
-    const score = evaluateBoard(replayGame);
-    setEvalScore(score);
 
     if (targetMoves.length > 0) {
       const verbose = replayGame.history({ verbose: true });
@@ -281,208 +283,112 @@ export function App() {
     }
   };
 
-  // Run Game Review with Stockfish 19
-  const handleRunAnalysis = async () => {
-    const pgn = game.pgn() || moves.map((m) => m.san).join(" ");
-    if (!pgn || moves.length === 0) {
-      setMode("analysis");
-      return;
-    }
+  const applyReport = (report: GameAnalysisReport, ply?: number) => {
+    setAnalysisReport(report);
+    setAnalysisPly(ply ?? report.moves.length);
+    setMoves((prev) => prev.map((m, idx) => ({ ...m, grade: report.moves[idx]?.grade })));
+  };
 
-    setMode("analysis");
-    setAnalysisProgress({ active: true, percent: 0, currentPly: 0, totalPlies: moves.length });
-
+  const runReview = async (pgnOrSans: string | string[], totalPlies: number) => {
+    setAnalysisProgress({ active: true, percent: 0, currentPly: 0, totalPlies });
     try {
-      const report = await stockfishService.analyzeFullGame(pgn, (percent, curr, total) => {
-        setAnalysisProgress({ active: true, percent, currentPly: curr, totalPlies: total });
+      const report = await analyzeGame(pgnOrSans, {
+        depth: 14,
+        priority: "high",
+        onProgress: (percent, curr, total) => setAnalysisProgress({ active: true, percent, currentPly: curr, totalPlies: total }),
       });
-      setAnalysisReport(report);
-      setAnalysisPly(report.moves.length);
-      setMoves((prev) =>
-        prev.map((m, idx) => ({
-          ...m,
-          grade: report.moves[idx]?.grade,
-        }))
-      );
+      applyReport(report);
     } catch (err) {
-      console.warn("Stockfish 19 analysis fallback:", err);
-      const fallbackReport = analyzeGame(pgn);
-      setAnalysisReport(fallbackReport);
-      setAnalysisPly(fallbackReport.moves.length);
-      setMoves((prev) =>
-        prev.map((m, idx) => ({
-          ...m,
-          grade: fallbackReport.moves[idx]?.grade,
-        }))
-      );
+      console.warn("Game review failed:", err);
+      setNotice((err as Error).message || "Game review failed.");
     } finally {
       setAnalysisProgress(null);
     }
   };
 
-  // Load PGN
-  const handleLoadPgn = async (pgnString: string) => {
+  // Run Game Review with Stockfish on the game on the board
+  const handleRunAnalysis = async () => {
+    setMode("analysis");
+    if (storedGameId && analysisReport) return; // already analyzed in the background
+    if (moves.length === 0) return;
+    await runReview(moves.map((m) => m.san), moves.length);
+  };
+
+  const loadMovesFromPgn = (pgnString: string): Chess | null => {
     const newG = new Chess();
     try {
       newG.loadPgn(pgnString);
-    } catch {}
-
-    const history = newG.history({ verbose: true });
-    const moveItems: MoveHistoryItem[] = history.map((m, idx) => ({
-      ply: idx + 1,
-      moveNumber: Math.floor(idx / 2) + 1,
-      san: m.san,
-      color: m.color,
-    }));
-
-    setGame(newG);
-    setMoves(moveItems);
-    setCurrentPly(moveItems.length);
-    setMode("analysis");
-    setGameOverReason("Loaded Game Analysis Complete");
-
-    setAnalysisProgress({ active: true, percent: 0, currentPly: 0, totalPlies: moveItems.length });
-    try {
-      const report = await stockfishService.analyzeFullGame(pgnString, (percent, curr, total) => {
-        setAnalysisProgress({ active: true, percent, currentPly: curr, totalPlies: total });
-      });
-      setAnalysisReport(report);
-      setAnalysisPly(report.moves.length);
-      setMoves((prev) =>
-        prev.map((m, idx) => ({
-          ...m,
-          grade: report.moves[idx]?.grade,
-        }))
-      );
-    } catch (err) {
-      console.warn("Stockfish 19 analysis fallback:", err);
-      const fallbackReport = analyzeGame(pgnString);
-      setAnalysisReport(fallbackReport);
-      setAnalysisPly(fallbackReport.moves.length);
-      setMoves((prev) =>
-        prev.map((m, idx) => ({
-          ...m,
-          grade: fallbackReport.moves[idx]?.grade,
-        }))
-      );
-    } finally {
-      setAnalysisProgress(null);
+    } catch {
+      setNotice("That PGN couldn't be read.");
+      return null;
     }
+    const history = newG.history({ verbose: true });
+    setGame(newG);
+    setMoves(history.map((m, idx) => ({ ply: idx + 1, moveNumber: Math.floor(idx / 2) + 1, san: m.san, color: m.color })));
+    setCurrentPly(history.length);
+    const last = history[history.length - 1];
+    setLastMove(last ? { from: last.from, to: last.to } : null);
+    return newG;
   };
 
-  // Select Imported Game from Chess.com or Lichess
-  const handleSelectImportedGame = async (imported: ImportedGame, targetUsername?: string) => {
-    const newG = new Chess();
-    try {
-      newG.loadPgn(imported.pgn);
-    } catch {
-      console.warn("Could not parse imported PGN directly with chess.js");
-    }
+  // Load a pasted PGN and review it
+  const handleLoadPgn = async (pgnString: string) => {
+    setStoredGameId(null);
+    const g = loadMovesFromPgn(pgnString);
+    if (!g) return;
+    setMode("analysis");
+    setGameOverReason("Loaded game");
+    await runReview(pgnString, g.history().length);
+  };
 
-    const history = newG.history({ verbose: true });
-    const moveItems: MoveHistoryItem[] = history.map((m, idx) => ({
-      ply: idx + 1,
-      moveNumber: Math.floor(idx / 2) + 1,
-      san: m.san,
-      color: m.color,
-    }));
-
-    let effectivePlayerColor: "w" | "b" = "w";
-    if (targetUsername) {
-      if (imported.black.username.toLowerCase() === targetUsername.trim().toLowerCase()) {
-        effectivePlayerColor = "b";
-      }
-    }
-
-    const opponentName = effectivePlayerColor === "w" ? imported.black.username : imported.white.username;
-    const opponentRating = effectivePlayerColor === "w" ? imported.black.rating : imported.white.rating;
-
-    let userResultOutcome: "win" | "loss" | "draw" = "draw";
-    if (imported.result === "1-0") userResultOutcome = effectivePlayerColor === "w" ? "win" : "loss";
-    else if (imported.result === "0-1") userResultOutcome = effectivePlayerColor === "b" ? "win" : "loss";
-
-    setGame(newG);
-    setMoves(moveItems);
-    setCurrentPly(moveItems.length);
-    setPlayerColor(effectivePlayerColor);
+  // Open a synced game (already analyzed in the background) in Game Review
+  const handleOpenStoredGame = async (gameId: string, ply?: number) => {
+    const rec = await gameStore.get(gameId);
+    if (!rec) return;
+    const g = loadMovesFromPgn(rec.pgn);
+    if (!g) return;
+    setStoredGameId(rec.id);
+    setPlayerColor(rec.playerColor);
+    setIsFlipped(rec.playerColor === "b");
+    setDetectedOpeningName(rec.openingName ? `${rec.eco ?? ""} ${rec.openingName}`.trim() : null);
     setGameOverReason(
-      `${imported.white.username} (${imported.white.rating}) vs ${imported.black.username} (${imported.black.rating}) • Result: ${imported.result}`
+      `${rec.white.name}${rec.white.rating ? ` (${rec.white.rating})` : ""} vs ${rec.black.name}${rec.black.rating ? ` (${rec.black.rating})` : ""} • You ${rec.outcome === "draw" ? "drew" : rec.outcome === "win" ? "won" : "lost"} (${rec.termination})`
     );
     setMode("analysis");
-
-    setAnalysisProgress({ active: true, percent: 0, currentPly: 0, totalPlies: moveItems.length });
-    try {
-      const report = await stockfishService.analyzeFullGame(imported.pgn, (percent, curr, total) => {
-        setAnalysisProgress({ active: true, percent, currentPly: curr, totalPlies: total });
-      });
-      setAnalysisReport(report);
-      setAnalysisPly(report.moves.length);
-      setMoves((prev) =>
-        prev.map((m, idx) => ({
-          ...m,
-          grade: report.moves[idx]?.grade,
-        }))
-      );
-
-      // Automatically update player's diagnostic profile and generate personalized drills from this game
-      diagnosticService.addAnalyzedGame(report, {
-        platform: imported.platform,
-        playerColor: effectivePlayerColor,
-        opponent: opponentName,
-        opponentRating: opponentRating,
-        date: imported.date,
-        result: imported.result,
-        userResultOutcome,
-        pgn: imported.pgn,
-        openingName: imported.openingName,
-        targetPlayerUsername: targetUsername,
-      });
-    } catch (err) {
-      console.warn("Falling back to local analysis:", err);
-      const fallbackReport = analyzeGame(imported.pgn);
-      setAnalysisReport(fallbackReport);
-      setAnalysisPly(fallbackReport.moves.length);
-      setMoves((prev) =>
-        prev.map((m, idx) => ({
-          ...m,
-          grade: fallbackReport.moves[idx]?.grade,
-        }))
-      );
-
-      diagnosticService.addAnalyzedGame(fallbackReport, {
-        platform: imported.platform,
-        playerColor: effectivePlayerColor,
-        opponent: opponentName,
-        opponentRating: opponentRating,
-        date: imported.date,
-        result: imported.result,
-        userResultOutcome,
-        pgn: imported.pgn,
-        openingName: imported.openingName,
-        targetPlayerUsername: targetUsername,
-      });
-    } finally {
-      setAnalysisProgress(null);
+    if (rec.analysis) {
+      applyReport(rec.analysis, ply);
+      if (ply !== undefined) handleSelectPly(ply, g.history());
+    } else {
+      await runReview(rec.pgn, g.history().length);
     }
   };
 
-  const handleBatchImportComplete = () => {
-    setPlayerProfile(diagnosticService.getPerformancePlan());
-    setMode("training");
-  };
-
-  // Add Current Game to Personal Training Plan & Generate Custom Drills
-  const handleAddToTrainingPlan = (rep: GameAnalysisReport) => {
-    diagnosticService.addAnalyzedGame(rep, {
+  // Save the reviewed game into "My games" so it feeds your improvement plan
+  const handleAddToTrainingPlan = async (rep: GameAnalysisReport) => {
+    const resultText = gameOverReason ?? "";
+    const outcome = /white wins/i.test(resultText)
+      ? playerColor === "w" ? "win" : "loss"
+      : /black wins/i.test(resultText)
+        ? playerColor === "b" ? "win" : "loss"
+        : "draw";
+    await gameStore.put({
+      id: `local:${Date.now()}`,
       platform: "local",
-      playerColor: playerColor,
-      opponent: bot.name,
-      opponentRating: bot.rating,
-      date: new Date().toISOString().split("T")[0],
-      result: gameOverReason || "Completed Game",
-      pgn: game.pgn() || moves.map((m) => m.san).join(" "),
+      url: "",
+      endTime: Date.now(),
+      timeClass: "unknown",
+      initialSeconds: timeControl.minutes ? timeControl.minutes * 60 : null,
+      rated: false,
+      white: { name: playerColor === "w" ? "You" : bot.name, rating: null },
+      black: { name: playerColor === "b" ? "You" : bot.name, rating: null },
+      playerColor,
+      outcome,
+      termination: resultText || "unfinished",
+      eco: null,
+      openingName: detectedOpeningName,
+      pgn: game.pgn(),
+      analysis: rep,
     });
-    setPlayerProfile(diagnosticService.getPerformancePlan());
     setMode("training");
     soundManager.playSuccess();
   };
@@ -513,7 +419,6 @@ export function App() {
       if (lastM) {
         setLastMove({ from: lastM.from, to: lastM.to });
       }
-      setEvalScore(evaluateBoard(previewG));
     } catch (e) {
       console.warn("Could not preview engine move:", e);
     }
@@ -527,6 +432,7 @@ export function App() {
     timeControl: TimeControl;
   }) => {
     const newG = new Chess();
+    setStoredGameId(null);
     setGame(newG);
     setMoves([]);
     setCurrentPly(0);
@@ -573,7 +479,6 @@ export function App() {
       setMoves(updatedMoves);
       setCurrentPly(updatedMoves.length);
     }
-    setEvalScore(evaluateBoard(gameCopy));
   };
 
   return (
@@ -594,21 +499,28 @@ export function App() {
           const muted = soundManager.toggleMute();
           setIsMuted(muted);
         }}
-        onOpenImportModal={() => setIsImportModalOpen(true)}
         onOpenCoach={() => setIsAiCoachOpen(true)}
-        playerProfile={playerProfile}
-        onOpenProfile={() => setIsProfileModalOpen(true)}
+        engineLabel={engineReady ? stockfishService.getEngineName() : null}
+        engineError={engineFailed}
       />
 
       {/* Main Container */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-3 md:p-4 flex flex-col justify-start">
-        {/* Stockfish 19 Game Review Progress Banner */}
+        {notice && (
+          <div className="mb-4 bg-amber-950/40 border border-amber-700/50 p-3 rounded-xl text-xs text-amber-200 flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+            <span className="flex-1">{notice}</span>
+            <button onClick={() => setNotice(null)} className="text-amber-300 cursor-pointer">Dismiss</button>
+          </div>
+        )}
+
+        {/* Game Review Progress Banner */}
         {analysisProgress?.active && (
           <div className="mb-4 bg-[#141824] border border-emerald-500/40 p-3.5 rounded-xl shadow-lg flex flex-col gap-2 animate-in fade-in duration-200">
             <div className="flex items-center justify-between text-xs">
               <div className="flex items-center gap-2 font-medium text-emerald-300">
                 <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
-                <span>Stockfish 19 Deep Analysis in progress...</span>
+                <span>Analyzing with {stockfishService.getEngineName()}…</span>
               </div>
               <span className="font-mono text-xs text-slate-300">
                 Ply {analysisProgress.currentPly} / {analysisProgress.totalPlies} ({analysisProgress.percent}%)
@@ -655,16 +567,16 @@ export function App() {
         )}
 
         {/* View Router */}
-        {mode === "training" ? (
-          <TrainingPlanView
-            theme={theme}
-            onOpenImportModal={() => setIsImportModalOpen(true)}
-            onLoadGamePgn={handleLoadPgn}
-          />
-        ) : mode === "puzzles" ? (
-          <PuzzlesView theme={theme} customBlunders={analysisReport?.blunderPuzzles} />
-        ) : mode === "openings" ? (
-          <OpeningExplorer theme={theme} />
+        {mode === "training" || mode === "puzzles" || mode === "openings" ? (
+          <Suspense fallback={<div className="text-sm text-slate-400 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</div>}>
+            {mode === "training" ? (
+              <ImproveView theme={theme} onOpenGame={(id, ply) => void handleOpenStoredGame(id, ply)} />
+            ) : mode === "puzzles" ? (
+              <PuzzlesView theme={theme} />
+            ) : (
+              <OpeningExplorer theme={theme} />
+            )}
+          </Suspense>
         ) : (
           /* Play / Analysis View */
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
@@ -748,7 +660,7 @@ export function App() {
                   currentFen={game.fen()}
                   pgn={game.pgn() || moves.map((m) => m.san).join(" ")}
                   onLoadPgn={handleLoadPgn}
-                  onAddToTrainingPlan={handleAddToTrainingPlan}
+                  onAddToTrainingPlan={storedGameId ? undefined : handleAddToTrainingPlan}
                   onOpenCoach={() => setIsAiCoachOpen(true)}
                   onPreviewEngineMove={handlePreviewEngineMove}
                 />
@@ -813,15 +725,7 @@ export function App() {
         initialMode={mode === "pass-play" ? "pass-play" : "vs-computer"}
       />
 
-      {/* Online Platform Game Importer Modal */}
-      <ImportGamesModal
-        isOpen={isImportModalOpen}
-        onClose={() => setIsImportModalOpen(false)}
-        onSelectGame={handleSelectImportedGame}
-        onBatchImportComplete={handleBatchImportComplete}
-      />
-
-      {/* Grandmaster AI Coach Drawer */}
+      {/* AI Coach Drawer */}
       <AiCoachDrawer
         isOpen={isAiCoachOpen}
         onClose={() => setIsAiCoachOpen(false)}
@@ -847,27 +751,14 @@ export function App() {
                 }
               : undefined,
           openingName: detectedOpeningName || undefined,
-          playerRating: diagnosticService.getPerformancePlan().overallRating,
-          weaknesses: diagnosticService.getPerformancePlan().weaknesses,
-          strengths: diagnosticService.getPerformancePlan().strengths,
-          competenciesSummary: `Opening: ${diagnosticService.getPerformancePlan().competencies.opening.score}/100, Tactics: ${diagnosticService.getPerformancePlan().competencies.tactics.score}/100, Endgame: ${diagnosticService.getPerformancePlan().competencies.endgame.score}/100`,
+          weaknesses: loadPlan()?.focus.map((f) => `${f.title} — ${f.evidence}`) ?? [],
         }}
-      />
-
-      {/* Player Profile & Diagnostics Modal */}
-      <PlayerProfileModal
-        isOpen={isProfileModalOpen}
-        onClose={() => setIsProfileModalOpen(false)}
-        plan={playerProfile}
-        onPlanUpdated={(updated) => setPlayerProfile(updated)}
-        onNavigateToTraining={() => setMode("training")}
-        onOpenImportGames={() => setIsImportModalOpen(true)}
       />
 
       {/* Quick-Access Floating AI Coach Trigger */}
       <button
         onClick={() => setIsAiCoachOpen(true)}
-        title="Consult Grandmaster AI Coach"
+        title="Ask the AI coach"
         className="fixed bottom-5 right-5 z-40 bg-gradient-to-r from-emerald-700 to-teal-700 hover:from-emerald-600 hover:to-teal-600 text-white px-3.5 py-2.5 rounded-full shadow-2xl border border-emerald-400/40 flex items-center gap-2 cursor-pointer transition hover:scale-105 active:scale-95 group"
       >
         <Bot className="w-4 h-4 text-emerald-300" />

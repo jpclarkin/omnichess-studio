@@ -359,6 +359,8 @@ export const Chessboard: React.FC<ChessboardProps> = ({
             return (
               <div
                 key={square}
+                data-square={square}
+                aria-label={square}
                 onClick={() => handleSquareClick(square)}
                 onMouseDown={(e) => handleMouseDown(e, square)}
                 onTouchStart={(e) => handleTouchStart(e, square)}

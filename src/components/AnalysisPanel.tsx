@@ -1,7 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
-import { Chess } from "chess.js";
 import type { GameAnalysisReport, AnalyzedMove, MoveGrade, EngineCandidateLine } from "../types/chess";
-import { findTopMoves } from "../engine/chessEngine";
 import { queryTablebase, countPiecesOnBoard, type TablebaseEvaluation } from "../services/tablebaseService";
 import { queryLiveOpening, type CloudOpeningResponse } from "../services/cloudOpeningService";
 import {
@@ -65,10 +63,10 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
   const [activeTab, setActiveTab] = useState<"moves" | "overview">("moves");
 
   // Tablebase & Opening Book state (Phase 2)
-  const [tablebaseData, setTablebaseData] = useState<TablebaseEvaluation | null>(null);
-  const [isLoadingTablebase, setIsLoadingTablebase] = useState(false);
-  const [cloudOpeningData, setCloudOpeningData] = useState<CloudOpeningResponse | null>(null);
-  const [isLoadingCloudOpening, setIsLoadingCloudOpening] = useState(false);
+  // Lookups are stored with the FEN they belong to; "loading" and "stale" are derived from that.
+  const [tablebaseResult, setTablebaseResult] = useState<{ fen: string; data: TablebaseEvaluation | null } | null>(null);
+  const [cloudResult, setCloudResult] = useState<{ fen: string; data: CloudOpeningResponse | null } | null>(null);
+  const [previewResetPly, setPreviewResetPly] = useState(selectedPly);
 
   const moveListRef = useRef<HTMLDivElement>(null);
 
@@ -76,53 +74,39 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
   const currentIndex = Math.max(0, Math.min(totalPlies - 1, selectedPly - 1));
   const selectedMove: AnalyzedMove | undefined = report.moves[currentIndex] || report.moves[totalPlies - 1];
 
-  // Reset engine preview state on ply change
-  useEffect(() => {
+  // Reset engine preview state when the selected ply changes (render-time reset pattern)
+  if (previewResetPly !== selectedPly) {
+    setPreviewResetPly(selectedPly);
     setIsPreviewingEngine(false);
     setPreviewingLineRank(null);
     setPreviewingMoveSan(null);
-  }, [selectedPly]);
+  }
 
-  // Query Syzygy Tablebase or Cloud Opening Book for selected move
+  const lookupFen = selectedMove?.fenBefore ?? "";
+  const wantsTablebase = !!selectedMove && countPiecesOnBoard(lookupFen) <= 7;
+  const wantsCloud = !!selectedMove && selectedMove.moveNumber <= 15;
+  const tablebaseData = wantsTablebase && tablebaseResult?.fen === lookupFen ? tablebaseResult.data : null;
+  const isLoadingTablebase = wantsTablebase && tablebaseResult?.fen !== lookupFen;
+  const cloudOpeningData = wantsCloud && cloudResult?.fen === lookupFen ? cloudResult.data : null;
+  const isLoadingCloudOpening = wantsCloud && cloudResult?.fen !== lookupFen;
+
+  // Query Syzygy Tablebase or Cloud Opening Book for the selected move
   useEffect(() => {
     let isCancelled = false;
-    if (!selectedMove) return;
-
-    const fen = selectedMove.fenBefore;
-    const pieces = countPiecesOnBoard(fen);
-
-    // 1. Tablebase query if <= 7 pieces
-    if (pieces <= 7) {
-      setIsLoadingTablebase(true);
-      queryTablebase(fen).then((tb) => {
-        if (!isCancelled) {
-          setTablebaseData(tb);
-          setIsLoadingTablebase(false);
-        }
+    if (wantsTablebase) {
+      queryTablebase(lookupFen).then((tb) => {
+        if (!isCancelled) setTablebaseResult({ fen: lookupFen, data: tb });
       });
-    } else {
-      setTablebaseData(null);
-      setIsLoadingTablebase(false);
     }
-
-    // 2. Cloud opening query for early game (first 15 moves)
-    if (selectedMove.moveNumber <= 15) {
-      setIsLoadingCloudOpening(true);
-      queryLiveOpening(fen).then((co) => {
-        if (!isCancelled) {
-          setCloudOpeningData(co);
-          setIsLoadingCloudOpening(false);
-        }
+    if (wantsCloud) {
+      queryLiveOpening(lookupFen).then((co) => {
+        if (!isCancelled) setCloudResult({ fen: lookupFen, data: co });
       });
-    } else {
-      setCloudOpeningData(null);
-      setIsLoadingCloudOpening(false);
     }
-
     return () => {
       isCancelled = true;
     };
-  }, [selectedMove]);
+  }, [lookupFen, wantsTablebase, wantsCloud]);
 
   // Autoplay / Replay functionality
   useEffect(() => {
@@ -184,24 +168,20 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
     if (selectedMove.topLines && selectedMove.topLines.length > 0) {
       return selectedMove.topLines;
     }
-    try {
-      const g = new Chess(selectedMove.fenBefore);
-      return findTopMoves(g, 3, 2);
-    } catch {
-      return [
-        {
-          rank: 1,
-          san: selectedMove.bestMoveSan,
-          score: selectedMove.evalBefore,
-          pv: [selectedMove.bestMoveSan],
-        },
-      ];
-    }
+    return [
+      {
+        rank: 1,
+        san: selectedMove.bestMoveSan,
+        score: selectedMove.evalBefore,
+        pv: selectedMove.bestLineSan?.length ? selectedMove.bestLineSan : [selectedMove.bestMoveSan],
+      },
+    ];
   }, [selectedMove]);
 
   const formatEval = (score: number, isMate?: boolean, mateIn?: number) => {
-    if (isMate) {
-      return score >= 0 ? `+M${mateIn || 1}` : `-M${mateIn || 1}`;
+    if (isMate || Math.abs(score) >= 9000) {
+      const n = mateIn || Math.max(1, Math.round((10000 - Math.abs(score)) / 10));
+      return score >= 0 ? `+M${n}` : `-M${n}`;
     }
     const val = score / 100;
     return val > 0 ? `+${val.toFixed(2)}` : val.toFixed(2);
@@ -291,7 +271,7 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
     inaccuracy: { label: "Inaccuracy", badgeClass: "bg-amber-950/80 text-amber-300 border-amber-500/60", dotClass: "bg-amber-400", glyph: "?!" },
     mistake: { label: "Mistake", badgeClass: "bg-orange-950/80 text-orange-300 border-orange-500/60", dotClass: "bg-orange-400", glyph: "?" },
     blunder: { label: "Blunder", badgeClass: "bg-red-950/80 text-red-300 border-red-500/60", dotClass: "bg-red-400", glyph: "??" },
-    missed_win: { label: "Missed Win", badgeClass: "bg-rose-950/80 text-rose-300 border-rose-500/60", dotClass: "bg-rose-400", glyph: "+-" },
+    missed_win: { label: "Missed Win", badgeClass: "bg-rose-950/80 text-rose-300 border-rose-500/60", dotClass: "bg-rose-400", glyph: "✗" },
   };
 
   const chartWidth = 320;
@@ -331,7 +311,7 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
             <h3 className="text-white font-bold text-sm tracking-wide flex items-center gap-2">
               GAME ANALYSIS & ENGINE REVIEW
               <span className="text-[10px] uppercase font-mono tracking-wider bg-[#222736] text-emerald-300 px-1.5 py-0.2 rounded border border-emerald-500/40">
-                Stockfish 19
+                {report.engineName ?? "Stockfish"}{report.depth ? ` · depth ${report.depth}` : ""}
               </span>
             </h3>
             <p className="text-[11px] text-slate-400">
@@ -345,7 +325,7 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
             <button
               onClick={onOpenCoach}
               className="text-xs bg-emerald-950/70 hover:bg-emerald-900/90 text-emerald-300 px-2.5 py-1.5 rounded-lg border border-emerald-500/50 flex items-center gap-1.5 transition cursor-pointer font-semibold"
-              title="Open Grandmaster AI Coach"
+              title="Open AI Coach"
             >
               <Bot className="w-3.5 h-3.5" />
               <span>AI Coach</span>
@@ -434,7 +414,7 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
         </div>
       </div>
 
-      {/* Selected Move Comparative Card (Played Move vs Stockfish 19 Engine) */}
+      {/* Selected Move Comparative Card (Played Move vs Stockfish) */}
       {selectedMove && (
         <div className="bg-[#11131a] p-3.5 rounded-xl border border-[#2b3142] shadow-md flex flex-col gap-3">
           <div className="flex items-center justify-between border-b border-[#202534] pb-2">
@@ -457,7 +437,7 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
             <div className="text-right font-mono">
               <span className="text-[10px] text-slate-400 block uppercase">Eval</span>
               <span className="text-xs font-bold text-slate-200">
-                {(selectedMove.evalAfter / 100).toFixed(2)}
+                {formatEval(selectedMove.evalAfter)}
               </span>
             </div>
           </div>
@@ -1034,7 +1014,7 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
           className="w-full py-2.5 px-3 bg-gradient-to-r from-emerald-800 to-teal-800 hover:from-emerald-700 hover:to-teal-700 text-white rounded-xl font-semibold text-xs transition flex items-center justify-center gap-2 cursor-pointer shadow-md border border-emerald-500/40 group"
         >
           <GraduationCap className="w-4 h-4 text-emerald-300 group-hover:scale-110 transition-transform" />
-          <span>Generate Drills & Update Training Plan from this Game</span>
+          <span>Save to My Games (adds its mistakes to your drills)</span>
         </button>
       )}
 

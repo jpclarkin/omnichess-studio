@@ -1,89 +1,56 @@
 # OmniChess Studio
 
-**OmniChess Studio** is a tournament-grade chess analysis, training, and play platform built with **React 19, TypeScript, Vite, and Tailwind CSS v4**.
+A personal chess-improvement app. It pulls in your games from **Chess.com** and **Lichess**, analyzes every one with **Stockfish** in your browser, finds the patterns that cost you games, and gives you a weekly plan: short lessons, drills built from your own mistakes, and themed puzzles.
 
-Designed with a clean FIDE tournament aesthetic, OmniChess Studio integrates embedded **Stockfish 19 WebAssembly NNUE**, deep multi-PV move analysis, multi-game playing history profiling, automated personalized blunder drill extraction, and conversational AI coaching.
+Built with React 19, TypeScript, Vite and Tailwind CSS v4. Everything runs in the browser; your games and progress stay on your machine.
 
----
+## Features
 
-## 🏛️ Key Features
+### My Improvement
+- **Automatic game sync** — add your Chess.com and/or Lichess username once. New games are fetched each time you open the app (at most every 10 minutes) and analyzed in the background.
+- **Insights** — accuracy by game phase, where your mistakes come from (hanging material, missed tactics, missed/allowed mates, opening, endgame, positional), how many came in time trouble, how often you convert winning positions, your openings with results and the engine evaluation after move 12, and your real Chess.com/Lichess rating history.
+- **Weekly plan** — the two or three issues costing you the most, each with the evidence from your games, a short lesson with a before-every-move checklist, and a week of tasks: drills, Lichess themed puzzles, game reviews and practice games. It rebuilds every Monday.
+- **My mistakes (drills)** — every mistake from your games becomes a "find the better move" position. Alternative answers are checked with Stockfish, and drills come back on a spaced-repetition schedule.
 
-### 1. Stockfish 19 WASM NNUE Engine
-- Embedded WebAssembly NNUE Stockfish 19 engine running via Web Workers with UCI protocol communication.
-- Real-time continuous position evaluation, centipawn bar, and depth calculation.
-- 4 bot difficulty tiers from Novice (800) to Grandmaster (2600).
+### Play, review, explore
+- **Play vs Stockfish** at seven levels, using Stockfish's own strength limiter (Skill Level for the lowest two, `UCI_Elo` 1400–2400, then full strength). "Engine Elo" is Stockfish's scale, not a Chess.com/Lichess rating.
+- **Game review** — every position is searched once with MultiPV 2. Moves are graded with Lichess's win-probability thresholds (inaccuracy / mistake / blunder at 5 / 10 / 15 points of win chance), and accuracy uses [Lichess's published formula](https://lichess.org/page/accuracy). "Brilliant" is reserved for real sacrifices the engine approves of; "Great" means the only good move.
+- **Opening explorer** (ChessDB cloud book; Lichess masters database when you add a Lichess API token) and **Syzygy tablebase** lookups for positions with 7 or fewer pieces.
+- **Tactics trainer** with a curated set and the Lichess daily puzzle.
+- **AI coach** — a built-in, offline rule-based coach, or a real language model via [Groq](https://console.groq.com) (free API key; model list loaded from your account) or a local [Ollama](https://ollama.com) server. If a model request fails, the reply says so.
 
-### 2. Multi-PV Engine Recommendations & Game Review
-- Full game review with move classification badges modeled after FIDE Informant conventions (`!!`, `!`, `★`, `✓`, `?!`, `?`, `??`, `+-`).
-- **Engine Recommendations (Multi-PV)**: Displays Top 1–3 candidate moves with live evaluation pills, continuation sequence (PV), and played move validation.
-- One-click interactive board preview to demonstrate candidate lines directly on the chessboard.
+## Engine
 
-### 3. Playing History Ingestion & Dynamic Training Regimen
-- Direct API ingestion of player archives from **Chess.com** and **Lichess.com**.
-- High-speed batch diagnostic analysis capable of evaluating 20+ games in under a second.
-- **5 FIDE Technical Competencies**:
-  1. *Opening Repertoire Discipline*
-  2. *Tactical Vigilance & Calculation*
-  3. *Piece Coordination & Harmony*
-  4. *Pawn Structure & Strategic Integrity*
-  5. *Endgame Technique & Conversion*
-- **Personal Drill Lab**: Converts high-impact blunders and missed wins directly from your games into interactive tactical drills with instant move validation.
-- **Adaptive 7-Day Performance Regimen**: Automatically prioritizes training on your lowest technical competency.
+The bundled engine is **Stockfish 18 Lite** (single-threaded WASM build from [stockfish.js](https://github.com/nmrugg/stockfish.js)), in `public/stockfish/`. It runs in a Web Worker behind a priority queue: live evaluation, bot moves and on-screen reviews jump ahead of background analysis. Searches that run long are stopped with `stop`, and if Stockfish can't start, the app says so instead of substituting a weaker engine.
 
-### 4. Player Profile & Lifetime Session Persistence
-- 100% private, client-side session persistence via browser `localStorage` (`omnichess_performance_plan_v1`).
-- Dedicated profile modal to inspect match records (W/L/D), win percentage, average accuracy, and competency diagnostics.
-- Full profile backup export and restore via JSON.
+## Data and privacy
 
-### 5. Grandmaster AI Coach
-- Conversational coaching drawer supporting open-source models:
-  - Meta Llama 3.3 70B
-  - DeepSeek-R1 (chain-of-thought)
-  - Qwen 2.5 72B
-  - Local Ollama (`http://localhost:11434`)
-  - Built-in offline Grandmaster reasoning fallback
-- Deep socratic exploration of tactical threats, pawn structure, and strategic plans.
+- Games and their analysis are stored in your browser's IndexedDB; plans, settings and drill progress in localStorage.
+- Usernames are only sent to Chess.com and Lichess. API keys/tokens (Groq, Lichess) are stored unencrypted in this browser and sent only to their own services.
+- Clearing site data for the app removes everything.
 
-### 6. Fluid Board Controls
-- Dual-mode piece movement: Click-to-Move and Drag-and-Drop operate simultaneously.
-- 4 tournament board themes: Emerald Classic, Heritage Wood, Tournament Slate, and High Contrast.
+## Getting started
 
----
+Requires Node.js 20+.
 
-## 🛠️ Tech Stack
-- **Frontend**: React 19, TypeScript, Vite 8, Tailwind CSS v4
-- **Chess Engine**: Stockfish 19 (WebAssembly NNUE via Web Worker), `chess.js`
-- **Icons & UI**: Lucide React, Canvas Confetti
-- **Linting & Tooling**: Oxlint
-
----
-
-## 🚀 Getting Started
-
-### Prerequisites
-- Node.js 18+
-- npm or pnpm
-
-### Installation
 ```bash
-# Clone the repository
 git clone https://github.com/jpclarkin/omnichess-studio.git
 cd omnichess-studio
-
-# Install dependencies
 npm install
-
-# Launch development server
-npm run dev
+npm run dev        # http://localhost:5173
 ```
 
-### Production Build
-```bash
-npm run build
-npm run preview
-```
+Then open **My Improvement**, click **Accounts**, enter your usernames and press **Save & sync**. The first sync imports your last 60 games per site (configurable) and analyzes them at depth 12; expect a few seconds per game.
 
----
+### Scripts
 
-## 📄 License
-MIT License
+| Command | What it does |
+| --- | --- |
+| `npm run dev` | Dev server |
+| `npm run build` | Type-check and production build |
+| `npm test` | Unit tests (Vitest) for grading, insights, plan building and API mapping |
+| `npm run lint` | Oxlint |
+
+## License
+
+GPL-3.0-or-later (see [LICENSE](LICENSE)). The app bundles Stockfish, which is licensed under the GPLv3, so the project as a whole is distributed under the GPL.
