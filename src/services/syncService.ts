@@ -4,7 +4,7 @@
  * reviewing stay responsive).
  */
 import { analyzeGame, EngineUnavailableError } from "../engine/gameAnalysis";
-import { EngineCancelled } from "../engine/stockfishService";
+import { EngineCancelled, StockfishService } from "../engine/stockfishService";
 import { gameStore, type GameRecord } from "./gameStore";
 import { fetchChessComGames, fetchLichessGames } from "./platforms";
 
@@ -25,6 +25,8 @@ export interface SyncSettings {
   autoAnalyzeLimit: number;
   /** User paused background analysis. Persisted, so it survives reloads. */
   analysisPaused: boolean;
+  /** Engines analyzing games in parallel (each is a separate single-threaded Stockfish). */
+  analysisWorkers: number;
 }
 
 export interface SyncStatus {
@@ -32,9 +34,24 @@ export interface SyncStatus {
   message: string;
   lastSyncAt: number | null;
   newGames: number;
+  /** Games finished in the current analysis run. */
   analyzeDone: number;
   analyzeTotal: number;
+  /** When the current analysis run started (ms), for speed / time-left estimates. */
+  analyzeStartedAt: number | null;
   errors: string[];
+}
+
+/** Default parallel engines: half the cores, between 1 and 4 (leaves room for the UI and live play). */
+export function defaultAnalysisWorkers(cores = typeof navigator !== "undefined" ? navigator.hardwareConcurrency : 4): number {
+  return Math.max(1, Math.min(4, Math.floor((cores || 4) / 2)));
+}
+
+/** Estimated seconds left, or null until enough games have finished to say. */
+export function estimateSecondsLeft(done: number, total: number, startedAt: number | null, now = Date.now()): number | null {
+  if (!startedAt || done < 3 || done >= total) return null;
+  const perGame = (now - startedAt) / done;
+  return Math.round((perGame * (total - done)) / 1000);
 }
 
 const SETTINGS_KEY = "omnichess_sync_settings_v1";
@@ -50,6 +67,7 @@ const DEFAULT_SETTINGS: SyncSettings = {
   autoSync: true,
   autoAnalyzeLimit: 50,
   analysisPaused: false,
+  analysisWorkers: defaultAnalysisWorkers(),
 };
 
 const isPending = (g: GameRecord) => !g.analysis && !g.analysisError;
@@ -82,8 +100,10 @@ class SyncService {
     newGames: 0,
     analyzeDone: 0,
     analyzeTotal: 0,
+    analyzeStartedAt: null,
     errors: [],
   };
+  private pool: StockfishService[] = [];
   private listeners = new Set<(s: SyncStatus) => void>();
   private running = false;
 
@@ -183,7 +203,7 @@ class SyncService {
   /** Pause background analysis (finishes the game in progress). Persists across reloads. */
   pauseAnalysis() {
     this.saveSettings({ analysisPaused: true });
-    if (this.analyzing) this.set({ message: "Pausing after the current game…" });
+    if (this.analyzing) this.set({ message: "Pausing after the games in progress…" });
   }
 
   /** Resume background analysis of the newest games. */
@@ -229,27 +249,50 @@ class SyncService {
       this.set({ phase: "idle", analyzeDone: 0, analyzeTotal: 0 });
       return;
     }
-    this.set({ phase: "analyzing", analyzeDone: 0, analyzeTotal: queue.length });
-    for (let i = 0; i < queue.length; i++) {
-      if (this.settings.analysisPaused) {
-        this.set({ phase: "idle", analyzeDone: i, message: "Analysis paused." });
-        return;
-      }
-      const g = queue[i];
-      this.set({ message: `Analyzing game ${i + 1} of ${queue.length}…`, analyzeDone: i });
-      try {
-        const report = await analyzeGame(g.pgn, { depth: this.settings.analysisDepth, priority: "low" });
-        await gameStore.put({ ...g, analysis: report, analysisError: null });
-      } catch (e) {
-        if (e instanceof EngineUnavailableError) {
-          this.set({ phase: "error", message: e.message });
-          return;
+    const total = queue.length;
+    const engines = this.engines(Math.min(this.settings.analysisWorkers, total));
+    this.set({ phase: "analyzing", analyzeDone: 0, analyzeTotal: total, analyzeStartedAt: Date.now(), message: `Analyzing 0 of ${total}…` });
+
+    let next = 0;
+    let done = 0;
+    let stopped = false; // engine unavailable / cancelled: abandon the run
+    const work = async (engine: StockfishService) => {
+      while (!stopped && !this.settings.analysisPaused) {
+        const g = queue[next++];
+        if (!g) return;
+        try {
+          const report = await analyzeGame(g.pgn, { depth: this.settings.analysisDepth, priority: "low", engine });
+          await gameStore.put({ ...g, analysis: report, analysisError: null });
+        } catch (e) {
+          if (e instanceof EngineUnavailableError) {
+            stopped = true;
+            this.set({ phase: "error", message: e.message });
+            return;
+          }
+          if (e instanceof EngineCancelled) {
+            stopped = true;
+            return;
+          }
+          await gameStore.put({ ...g, analysisError: (e as Error).message || "Could not analyze game" });
         }
-        if (e instanceof EngineCancelled) return;
-        await gameStore.put({ ...g, analysisError: (e as Error).message || "Could not analyze game" });
+        done++;
+        this.set({ analyzeDone: done, message: `Analyzing ${done} of ${total}…` });
       }
+    };
+    await Promise.all(engines.map(work));
+
+    if (stopped) return;
+    if (this.settings.analysisPaused && done < total) {
+      this.set({ phase: "idle", analyzeDone: done, message: "Analysis paused." });
+      return;
     }
-    this.set({ phase: "idle", analyzeDone: queue.length, message: "Analysis complete." });
+    this.set({ phase: "idle", analyzeDone: done, message: "Analysis complete." });
+  }
+
+  /** `n` engines for background analysis, created on first use and reused between runs. */
+  private engines(n: number): StockfishService[] {
+    while (this.pool.length < n) this.pool.push(new StockfishService({ hashMb: 32 }));
+    return this.pool.slice(0, Math.max(1, n));
   }
 
   /** Re-queue analysis for a game (e.g. after an error). */

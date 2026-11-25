@@ -7,7 +7,7 @@ const h = vi.hoisted(() => {
     setItem: (k: string, v: string) => void mem.set(k, v),
     removeItem: (k: string) => void mem.delete(k),
   };
-  return { store: [] as any[], analyzed: [] as string[], onAnalyze: null as null | ((id: string) => void) };
+  return { store: [] as any[], analyzed: [] as string[], onAnalyze: null as null | ((id: string) => void), engines: new Set<unknown>(), active: 0, maxActive: 0 };
 });
 
 vi.mock("../services/gameStore", () => ({
@@ -21,13 +21,22 @@ vi.mock("../services/gameStore", () => ({
 }));
 vi.mock("../engine/gameAnalysis", () => ({
   EngineUnavailableError: class extends Error {},
-  analyzeGame: async (pgn: string) => {
+  analyzeGame: async (pgn: string, opts: { engine?: unknown } = {}) => {
     h.analyzed.push(pgn);
+    h.engines.add(opts.engine);
+    h.active++;
+    h.maxActive = Math.max(h.maxActive, h.active);
     h.onAnalyze?.(pgn);
+    await new Promise((r) => setTimeout(r, 1)); // let other workers interleave
+    h.active--;
     return { whiteAccuracy: 90 };
   },
 }));
-vi.mock("../engine/stockfishService", () => ({ EngineCancelled: class extends Error {} }));
+vi.mock("../engine/stockfishService", () => ({
+  EngineCancelled: class extends Error {},
+  StockfishService: class {},
+  stockfishService: {},
+}));
 
 import { syncService } from "../services/syncService";
 
@@ -36,7 +45,10 @@ const reset = () => {
   h.store = Array.from({ length: 80 }, (_, i) => ({ id: `g${i}`, pgn: `g${i}`, endTime: 1000 - i, analysis: null, analysisError: null }));
   h.analyzed = [];
   h.onAnalyze = null;
-  syncService.saveSettings({ autoAnalyzeLimit: 50, analysisPaused: false });
+  h.engines = new Set();
+  h.active = 0;
+  h.maxActive = 0;
+  syncService.saveSettings({ autoAnalyzeLimit: 50, analysisPaused: false, analysisWorkers: 1 });
 };
 beforeEach(reset);
 
@@ -77,5 +89,23 @@ describe("background analysis controls", () => {
     syncService.saveSettings({ autoAnalyzeLimit: 0 });
     await syncService.analyzePending();
     expect(h.analyzed).toHaveLength(0);
+  });
+
+  it("runs several engines in parallel without analyzing any game twice", async () => {
+    syncService.saveSettings({ analysisWorkers: 3 });
+    await syncService.analyzePending();
+    expect(h.analyzed).toHaveLength(50);
+    expect(new Set(h.analyzed).size).toBe(50);
+    expect(h.engines.size).toBe(3);
+    expect(h.maxActive).toBeGreaterThan(1);
+  });
+
+  it("pausing stops every parallel worker", async () => {
+    syncService.saveSettings({ analysisWorkers: 3 });
+    h.onAnalyze = (id) => id === "g9" && syncService.pauseAnalysis();
+    await syncService.analyzePending();
+    // g9 plus at most the other games already in flight when the pause landed
+    expect(h.analyzed.length).toBeGreaterThanOrEqual(10);
+    expect(h.analyzed.length).toBeLessThanOrEqual(12);
   });
 });

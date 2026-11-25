@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { RefreshCw, Settings2, Loader2, AlertTriangle, CheckCircle2, Pause, Play } from "lucide-react";
-import { syncService } from "../../services/syncService";
+import { syncService, estimateSecondsLeft } from "../../services/syncService";
 import { useSyncStatus } from "./hooks";
 
 function timeAgo(t: number | null): string {
@@ -10,6 +10,13 @@ function timeAgo(t: number | null): string {
   if (mins < 60) return `${mins} min ago`;
   const h = Math.round(mins / 60);
   return h < 24 ? `${h} h ago` : `${Math.round(h / 24)} d ago`;
+}
+
+function fmtEta(sec: number): string {
+  if (sec < 90) return `${sec} s`;
+  const min = Math.round(sec / 60);
+  if (min < 90) return `${min} min`;
+  return `${Math.floor(min / 60)} h ${min % 60} min`;
 }
 
 export function SyncPanel({
@@ -30,6 +37,11 @@ export function SyncPanel({
   const busy = status.phase === "fetching" || status.phase === "analyzing";
   const analyzing = status.phase === "analyzing";
   const paused = syncService.getSettings().analysisPaused;
+  const secLeft = estimateSecondsLeft(status.analyzeDone, status.analyzeTotal, status.analyzeStartedAt);
+  const perMin =
+    status.analyzeStartedAt && status.analyzeDone >= 3
+      ? (status.analyzeDone / Math.max(1, Date.now() - status.analyzeStartedAt)) * 60000
+      : null;
   const smallBtn =
     "px-2.5 py-1 bg-[#212634] hover:bg-[#2b3245] text-slate-200 text-[11px] font-semibold rounded-lg border border-[#30384c] flex items-center gap-1.5 cursor-pointer";
 
@@ -41,6 +53,7 @@ export function SyncPanel({
       analysisDepth: form.analysisDepth,
       autoSync: form.autoSync,
       autoAnalyzeLimit: form.autoAnalyzeLimit,
+      analysisWorkers: form.analysisWorkers,
       chesscomUsername: form.chesscomUsername.trim(),
       lichessUsername: form.lichessUsername.trim(),
       lichessToken: form.lichessToken.trim(),
@@ -99,7 +112,9 @@ export function SyncPanel({
           )}
           <span className={status.phase === "error" ? "text-amber-300" : "text-slate-300"}>
             {analyzing
-              ? `Analyzing game ${Math.min(status.analyzeDone + 1, status.analyzeTotal)} of ${status.analyzeTotal} queued · ${analyzedCount} of ${gameCount} stored games analyzed`
+              ? `Analyzed ${status.analyzeDone} of ${status.analyzeTotal} queued · ${analyzedCount} of ${gameCount} stored games done` +
+                (perMin ? ` · ${perMin.toFixed(perMin < 10 ? 1 : 0)} games/min` : "") +
+                (secLeft != null ? ` · about ${fmtEta(secLeft)} left` : "")
               : status.message}
           </span>
           {analyzing && (
@@ -165,11 +180,15 @@ export function SyncPanel({
               Create one with no scopes at lichess.org/account/oauth/token. It's stored only in this browser.
             </span>
           </label>
-          <label className="text-xs text-slate-400 md:col-span-2">
+          <label className="text-xs text-slate-400">
+            Parallel engines (more = faster, uses more CPU)
+            <input type="number" min={1} max={8} className={input} value={form.analysisWorkers} onChange={(e) => setForm({ ...form, analysisWorkers: Math.min(8, Math.max(1, Number(e.target.value) || 1)) })} />
+          </label>
+          <label className="text-xs text-slate-400">
             Analyze automatically: newest N games (0 = only when I ask)
             <input type="number" min={0} max={2000} className={input} value={form.autoAnalyzeLimit} onChange={(e) => setForm({ ...form, autoAnalyzeLimit: Math.max(0, Number(e.target.value) || 0) })} />
             <span className="block mt-1 text-[11px] text-slate-500">
-              Older games stay unanalyzed until you press “Analyze remaining”. Insights use whatever is analyzed so far.
+              0 = only when I ask. Older games wait for “Analyze remaining”.
             </span>
           </label>
           <label className="text-xs text-slate-300 flex items-center gap-2 md:col-span-2">
