@@ -63,6 +63,8 @@ export function App() {
   /** Set when Game Review shows a game from "My games" (so it isn't saved twice). */
   const [storedGameId, setStoredGameId] = useState<string | null>(null);
   const [analysisReport, setAnalysisReport] = useState<GameAnalysisReport | null>(null);
+  /** Time control of the game under review (known for synced games), for the performance estimate. */
+  const [reviewTimeClass, setReviewTimeClass] = useState<string | null>(null);
   const [analysisPly, setAnalysisPly] = useState<number>(0);
   const [analysisProgress, setAnalysisProgress] = useState<{
     active: boolean;
@@ -348,6 +350,7 @@ export function App() {
     const g = loadMovesFromPgn(rec.pgn);
     if (!g) return;
     setStoredGameId(rec.id);
+    setReviewTimeClass(rec.timeClass);
     setPlayerColor(rec.playerColor);
     setIsFlipped(rec.playerColor === "b");
     setDetectedOpeningName(rec.openingName ? `${rec.eco ?? ""} ${rec.openingName}`.trim() : null);
@@ -651,6 +654,7 @@ export function App() {
               {mode === "analysis" && analysisReport ? (
                 <AnalysisPanel
                   report={analysisReport}
+                  timeClass={storedGameId ? reviewTimeClass : null}
                   selectedPly={analysisPly}
                   onSelectPly={(ply) => {
                     setAnalysisPly(ply);
