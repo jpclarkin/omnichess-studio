@@ -17,6 +17,7 @@ import { soundManager } from "./audio/soundManager";
 import { analyzeGame, scoreToDisplayCp } from "./engine/gameAnalysis";
 import { EngineCancelled, stockfishService } from "./engine/stockfishService";
 import { gameStore } from "./services/gameStore";
+import { getRatingOffsets, offsetKey, type RatingOffset } from "./services/ratingOffset";
 import { syncService } from "./services/syncService";
 import { loadPlan } from "./services/coachPlan";
 import { detectOpening } from "./data/openings";
@@ -65,6 +66,7 @@ export function App() {
   const [analysisReport, setAnalysisReport] = useState<GameAnalysisReport | null>(null);
   /** Time control of the game under review (known for synced games), for the performance estimate. */
   const [reviewTimeClass, setReviewTimeClass] = useState<string | null>(null);
+  const [reviewOffset, setReviewOffset] = useState<(RatingOffset & { platform: string }) | null>(null);
   const [analysisPly, setAnalysisPly] = useState<number>(0);
   const [analysisProgress, setAnalysisProgress] = useState<{
     active: boolean;
@@ -351,6 +353,11 @@ export function App() {
     if (!g) return;
     setStoredGameId(rec.id);
     setReviewTimeClass(rec.timeClass);
+    setReviewOffset(null);
+    void getRatingOffsets().then((m) => {
+      const o = m.get(offsetKey(rec.platform, rec.timeClass));
+      if (o) setReviewOffset({ ...o, platform: rec.platform });
+    });
     setPlayerColor(rec.playerColor);
     setIsFlipped(rec.playerColor === "b");
     setDetectedOpeningName(rec.openingName ? `${rec.eco ?? ""} ${rec.openingName}`.trim() : null);
@@ -655,6 +662,7 @@ export function App() {
                 <AnalysisPanel
                   report={analysisReport}
                   timeClass={storedGameId ? reviewTimeClass : null}
+                  ratingOffset={storedGameId ? reviewOffset : null}
                   selectedPly={analysisPly}
                   onSelectPly={(ply) => {
                     setAnalysisPly(ply);
