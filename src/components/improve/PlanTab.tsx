@@ -69,7 +69,7 @@ function FocusCard({ f, rank }: { f: FocusArea; rank: number }) {
         <h3 className="text-white font-bold mt-0.5">{f.title}</h3>
         <p className="text-xs text-slate-400 mt-1">{f.evidence}</p>
       </div>
-      <LessonCard lessonId={f.lessonId} defaultOpen={rank === 1} />
+      <LessonCard lessonId={f.lessonId} defaultOpen />
     </div>
   );
 }
