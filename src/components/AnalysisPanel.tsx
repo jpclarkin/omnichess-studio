@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import type { GameAnalysisReport, AnalyzedMove, MoveGrade, EngineCandidateLine } from "../types/chess";
-import { estimatePerformance, type PerformanceEstimate } from "../engine/performanceModel";
+import { estimatePerformance, applyRatingOffset, type PerformanceEstimate } from "../engine/performanceModel";
 import { queryTablebase, countPiecesOnBoard, type TablebaseEvaluation } from "../services/tablebaseService";
 import { queryLiveOpening, type CloudOpeningResponse } from "../services/cloudOpeningService";
 import {
@@ -31,6 +31,8 @@ interface AnalysisPanelProps {
   report: GameAnalysisReport;
   /** Time control of the game (bullet / blitz / rapid), when known; picks the performance calibration. */
   timeClass?: string | null;
+  /** Scale shift learned from the user's own games on this platform, if enough exist. */
+  ratingOffset?: { offset: number; n: number; platform: string } | null;
   selectedPly: number;
   onSelectPly: (ply: number) => void;
   onRetryBlunder: (move: AnalyzedMove) => void;
@@ -42,16 +44,17 @@ interface AnalysisPanelProps {
   onPreviewEngineMove?: (bestMoveSan: string | string[], fenBefore: string) => void;
 }
 
-const PerformanceLine: React.FC<{ est: PerformanceEstimate | null }> = ({ est }) => {
+type Adj = { offset: number; n: number; platform: string } | null | undefined;
+const PerformanceLine: React.FC<{ est: PerformanceEstimate | null; adj?: Adj }> = ({ est, adj }) => {
   const scope = est && est.basis !== "all" ? ` ${est.basis}` : "";
   const tip = !est
     ? "Too few moves to estimate."
     : est.kind === "uninformative"
       ? "In bullet, how accurately people play looks almost the same from 400 to 1800 rated (about 84% accuracy throughout, in 520 rated Lichess bullet games we analyzed), because games are short and often decided by the clock. So this game can't tell us the rating, and we don't guess."
-      : `Calibrated on rated Lichess${scope} games analyzed the same way as this one: 80% of players who produce games like this were rated between ${est.low} and ${est.high} (typical ${est.mid}). Lichess scale; Chess.com ratings usually run lower. One game is a weak signal. ${est.moves} moves, ${est.acpl} avg cp loss.`;
+      : `Calibrated on rated Lichess${scope} games analyzed the same way as this one: 80% of players who produce games like this were rated between ${est.low} and ${est.high} (typical ${est.mid}). ${adj ? `Shifted ${adj.offset >= 0 ? "+" : ""}${adj.offset} to match your own ${adj.platform} rating history (${adj.n} games).` : "Lichess scale; Chess.com ratings usually run lower."} One game is a weak signal. ${est.moves} moves, ${est.acpl} avg cp loss.`;
   return (
     <div className="mt-2 text-center" title={tip}>
-      <div className="text-[10px] uppercase tracking-wide text-slate-500">Plays like · Lichess scale</div>
+      <div className="text-[10px] uppercase tracking-wide text-slate-500">Plays like · {adj ? `${adj.platform} scale` : "Lichess scale"}</div>
       {!est ? (
         <div className="text-sm text-slate-500 font-mono">—</div>
       ) : est.kind === "uninformative" ? (
@@ -84,13 +87,14 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
   onOpenCoach,
   onPreviewEngineMove,
   timeClass,
+  ratingOffset,
 }) => {
   const perf = useMemo(
     () => ({
-      w: estimatePerformance(report.moves, "w", { accuracy: report.whiteAccuracy, timeClass }),
-      b: estimatePerformance(report.moves, "b", { accuracy: report.blackAccuracy, timeClass }),
+      w: applyRatingOffset(estimatePerformance(report.moves, "w", { accuracy: report.whiteAccuracy, timeClass }), ratingOffset?.offset ?? 0),
+      b: applyRatingOffset(estimatePerformance(report.moves, "b", { accuracy: report.blackAccuracy, timeClass }), ratingOffset?.offset ?? 0),
     }),
-    [report.moves, report.whiteAccuracy, report.blackAccuracy, timeClass],
+    [report.moves, report.whiteAccuracy, report.blackAccuracy, timeClass, ratingOffset?.offset],
   );
   const [copiedPgn, setCopiedPgn] = useState(false);
   const [copiedFen, setCopiedFen] = useState(false);
@@ -985,7 +989,7 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
                   style={{ width: `${report.whiteAccuracy}%` }}
                 />
               </div>
-              <PerformanceLine est={perf.w} />
+              <PerformanceLine est={perf.w} adj={ratingOffset} />
             </div>
 
             <div className="flex flex-col items-center bg-[#171a24] p-2.5 rounded-lg border border-[#2b3040]">
@@ -999,7 +1003,7 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
                   style={{ width: `${report.blackAccuracy}%` }}
                 />
               </div>
-              <PerformanceLine est={perf.b} />
+              <PerformanceLine est={perf.b} adj={ratingOffset} />
             </div>
           </div>
 

@@ -140,3 +140,10 @@ export function estimatePerformance(
   const mv = moves.filter((m) => m.color === color).map((m) => moveTuple(m, color));
   return performanceFromTuples(mv, opts.accuracy, opts.timeClass);
 }
+
+/** Shift a range estimate by a rating-scale offset (e.g. Chess.com vs the Lichess-calibrated model). */
+export function applyRatingOffset(est: PerformanceEstimate | null, offset: number): PerformanceEstimate | null {
+  if (!est || est.kind !== "range" || !offset) return est;
+  const shift = (x: number) => Math.max(100, round50(x + offset));
+  return { ...est, mid: shift(est.mid), low: shift(est.low), high: shift(est.high) };
+}
